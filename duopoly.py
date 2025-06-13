@@ -2339,29 +2339,6 @@ if __name__ == "__main__":
         'n_phi2_grid': 10       # Number of indemnity grid points
     }
     
-    # Test action bounds functionality
-    print("\nTesting action bounds functionality...")
-    function_config = {'p': 'logistic', 'm': 'linear', 'e': 'power', 'u': 'exponential', 'f': 'binary_states', 'c': 'linear'}
-    functions = FlexibleFunctions(function_config)
-    
-    # Test with default bounds [0, 1]
-    solver_default = DuopolySolver(functions, required_params)
-    print(f"Default action bounds: [{solver_default.a_min}, {solver_default.a_max}]")
-    
-    # Test with custom bounds [0.2, 0.8]
-    custom_params = required_params.copy()
-    custom_params['a_min'] = 0.2
-    custom_params['a_max'] = 0.8
-    solver_custom = DuopolySolver(functions, custom_params)
-    print(f"Custom action bounds: [{solver_custom.a_min}, {solver_custom.a_max}]")
-    
-    # Test reservation utility computation with different bounds
-    theta_test = 1.0
-    V0_default = solver_default.compute_reservation_utility(theta_test)
-    V0_custom = solver_custom.compute_reservation_utility(theta_test)
-    print(f"Reservation utility with default bounds: {V0_default:.4f}")
-    print(f"Reservation utility with custom bounds: {V0_custom:.4f}")
-    
     # Initialize logger
     logger = SimulationLogger(experiment_name="duopoly_example_run")
     
