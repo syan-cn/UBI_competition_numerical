@@ -542,44 +542,62 @@ class FlexibleFunctions(FunctionTemplates):
     
     def p(self, a: float, params: Dict) -> float:
         """No accident probability function."""
-        func_type = self.config.get('p', 'linear')
+        if 'p' not in self.config:
+            raise ValueError("Function type 'p' not specified in configuration")
+        func_type = self.config['p']
         return self.p_functions[func_type](a, params)
     
     def m(self, delta: float, params: Dict) -> float:
         """Monitoring cost function."""
-        func_type = self.config.get('m', 'linear')
+        if 'm' not in self.config:
+            raise ValueError("Function type 'm' not specified in configuration")
+        func_type = self.config['m']
         return self.m_functions[func_type](delta, params)
     
     def e(self, a: float, theta: float, params: Dict) -> float:
         """Action cost function."""
-        func_type = self.config.get('e', 'power')
+        if 'e' not in self.config:
+            raise ValueError("Function type 'e' not specified in configuration")
+        func_type = self.config['e']
         return self.e_functions[func_type](a, theta, params)
     
     def u(self, x: float, params: Dict) -> float:
         """Utility function."""
-        func_type = self.config.get('u', 'linear')
+        if 'u' not in self.config:
+            raise ValueError("Function type 'u' not specified in configuration")
+        func_type = self.config['u']
         return self.u_functions[func_type](x, params)
     
     def f(self, a: float, delta: float, params: Dict) -> DiscreteStateSpace:
         """State density function - now returns DiscreteStateSpace."""
-        func_type = self.config.get('f', 'binary_states')
+        if 'f' not in self.config:
+            raise ValueError("Function type 'f' not specified in configuration")
+        func_type = self.config['f']
         return self.f_functions[func_type](a, delta, params)
     
     def c(self, delta: float, params: Dict) -> float:
         """Insurer cost function."""
-        func_type = self.config.get('c', 'linear')
+        if 'c' not in self.config:
+            raise ValueError("Function type 'c' not specified in configuration")
+        func_type = self.config['c']
         return self.c_functions[func_type](delta, params)
 
     def dp_da(self, a: float, params: Dict) -> float:
-        func_type = self.config.get('p', 'linear')
+        if 'p' not in self.config:
+            raise ValueError("Function type 'p' not specified in configuration")
+        func_type = self.config['p']
         return getattr(NoAccidentProbability, f"dp_da_{func_type}")(a, params)
 
     def de_da(self, a: float, theta: float, params: Dict) -> float:
-        func_type = self.config.get('e', 'power')
+        if 'e' not in self.config:
+            raise ValueError("Function type 'e' not specified in configuration")
+        func_type = self.config['e']
         return getattr(ActionCost, f"de_da_{func_type}")(a, theta, params)
 
     def df_da(self, a: float, delta: float, params: Dict) -> np.ndarray:
-        func_type = self.config.get('f', 'binary_states')
+        if 'f' not in self.config:
+            raise ValueError("Function type 'f' not specified in configuration")
+        func_type = self.config['f']
         return getattr(StateDensity, f"df_da_{func_type}")(a, delta, params)
 
 
@@ -2164,14 +2182,21 @@ class InsuranceSimulator:
 # EXAMPLE USAGE
 # ============================================================================
 
-def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True, params=None, logger: SimulationLogger = None, use_parallel=True, n_jobs=None):
+def run_simulation(function_configs=None, include_sensitivity=True, save_plots=True, params=None, logger: SimulationLogger = None, use_parallel=True, n_jobs=None):
     """
-    Unified simulation function that can handle single or multiple state space configurations.
+    Unified simulation function that can handle single or multiple function configurations.
     
     Args:
-        state_spaces: List of state space configurations to test. 
-                     If None, uses default binary states.
-                     Each config should be {'name': str, 'f': str} where 'f' is the state density function name.
+        function_configs: List of function configurations to test. 
+                         Example: {
+                             'name': 'basic_binary_states',
+                             'p': 'logistic',
+                             'm': 'linear',
+                             'e': 'power',
+                             'u': 'exponential',
+                             'f': 'binary_states',
+                             'c': 'linear'
+                         }
         include_sensitivity: Whether to run sensitivity analysis
         save_plots: Whether to save plots to files
         params: Dictionary containing all required parameters. Must include:
@@ -2204,14 +2229,6 @@ def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True,
     # Validate required parameters
     if params is None:
         raise ValueError("params dictionary is required and cannot be None")
-    required_params = [
-        'W', 's', 'N', 'delta1', 'delta2', 'theta_min', 'theta_max', 'n_theta',
-        'p_alpha', 'p_beta', 'm_gamma', 'e_kappa', 'e_power', 'u_rho', 
-        'f_p_base', 'c_lambda', 'xi_scale'
-    ]
-    missing_params = [param for param in required_params if param not in params]
-    if missing_params:
-        raise ValueError(f"Missing required parameters: {missing_params}")
     
     # Check action bounds (optional parameters with defaults)
     if 'a_min' not in params:
@@ -2225,28 +2242,16 @@ def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True,
     if params['a_min'] < 0:
         raise ValueError("a_min must be non-negative")
     
-    for state_config in state_spaces:
-        if state_config['f'] == 'custom_discrete':
-            custom_params = ['f_z_values', 'f_base_probs', 'f_p_a', 'f_p_delta']
-            missing_custom = [param for param in custom_params if param not in params]
-            if missing_custom:
-                raise ValueError(f"Missing required parameters for custom_discrete: {missing_custom}")
-    if state_spaces is None:
-        state_spaces = [{'name': 'binary', 'f': 'binary_states'}]
-    base_function_config = {
-        'p': 'logistic',
-        'm': 'linear',
-        'e': 'power',
-        'u': 'logarithmic',
-        'c': 'linear'
-    }
+    if function_configs is None:
+        raise ValueError("function_configs is required and cannot be None")
+
     results = {}
     # --- Initialize logger if not provided ---
     if logger is None:
         logger = SimulationLogger(experiment_name="duopoly_experiment")
     logger.log_experiment_start("Duopoly insurance simulation")
     logger.log_simulation_settings({
-        'state_spaces': state_spaces,
+        'function_configs': function_configs,
         'include_sensitivity': include_sensitivity,
         'save_plots': save_plots,
         'use_parallel': use_parallel,
@@ -2262,10 +2267,16 @@ def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True,
     timestamp_str = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     output_dir = Path('outputs') / f"{logger.experiment_name}_{timestamp_str}"
     output_dir.mkdir(parents=True, exist_ok=True)
-    for state_config in state_spaces:
-        print(f"\nRunning simulation with {state_config['name']} state space...")
-        function_config = base_function_config.copy()
-        function_config['f'] = state_config['f']
+    for config in function_configs:
+        print(f"\nRunning simulation with {config['name']} configuration...")
+        # Validate that all required function types are specified
+        required_keys = ['name', 'p', 'm', 'e', 'u', 'f', 'c']
+        missing_keys = [key for key in required_keys if key not in config]
+        if missing_keys:
+            raise ValueError(f"Function configuration '{config['name']}' is missing required keys: {missing_keys}")
+        
+        # Create function configuration dictionary (remove 'name' as it's not needed by FlexibleFunctions)
+        function_config = {key: config[key] for key in ['p', 'm', 'e', 'u', 'f', 'c']}
         functions = FlexibleFunctions(function_config)
         solver = DuopolySolver(functions, params)
         
@@ -2277,19 +2288,19 @@ def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True,
             print("Using sequential brute-force grid search for contracts...")
             pareto_solutions = solver.brute_force_duopoly(logger=logger)
             
-        results[state_config['name']] = pareto_solutions
+        results[config['name']] = pareto_solutions
         if save_plots:
             # Only plot the first Pareto solution for illustration
             if pareto_solutions:
                 solution = pareto_solutions[0]
                 simulator = InsuranceSimulator(solver)
-                simulator.plot_results(solution, str(output_dir / f'{state_config["name"]}_results.png'))
-                simulator.plot_discrete_analysis(solution, str(output_dir / f'{state_config["name"]}_analysis.png'))
+                simulator.plot_results(solution, str(output_dir / f'{config["name"]}_results.png'))
+                simulator.plot_discrete_analysis(solution, str(output_dir / f'{config["name"]}_analysis.png'))
         # Log duopoly solution
         if pareto_solutions:
-            logger.log_duopoly_solution(pareto_solutions[0], state_config['name'])
+            logger.log_duopoly_solution(pareto_solutions[0], config['name'])
         else:
-            logger.log_warning(f"No Pareto solutions found for state space: {state_config['name']}")
+            logger.log_warning(f"No Pareto solutions found for configuration: {config['name']}")
         # Sensitivity analysis can be skipped or adapted for grid search
     print("Simulation completed!")
     logger.log_experiment_end("Simulation completed successfully")
@@ -2323,11 +2334,6 @@ if __name__ == "__main__":
         'f_p_base': 0.5,        # Parameter for state density function
         'c_lambda': 30,         # Parameter for insurer cost function
         'xi_scale': 500.0,      # Scale parameter for logit choice model
-        # Additional parameters for custom_discrete state density function
-        'f_z_values': [0.0, 1.0, 2.0],  # State values for custom discrete
-        'f_base_probs': [0.5, 0.3, 0.2],  # Base probabilities for custom discrete
-        'f_p_a': 0.1,           # Action effect parameter for custom discrete
-        'f_p_delta': 0.05,      # Monitoring effect parameter for custom discrete
         # Grid search parameters (smaller for faster testing)
         'n_phi1_grid': 10,      # Number of premium grid points
         'n_phi2_grid': 10       # Number of indemnity grid points
@@ -2335,7 +2341,7 @@ if __name__ == "__main__":
     
     # Test action bounds functionality
     print("\nTesting action bounds functionality...")
-    function_config = {'p': 'logistic', 'm': 'linear', 'e': 'power', 'u': 'logarithmic', 'f': 'binary_states', 'c': 'linear'}
+    function_config = {'p': 'logistic', 'm': 'linear', 'e': 'power', 'u': 'exponential', 'f': 'binary_states', 'c': 'linear'}
     functions = FlexibleFunctions(function_config)
     
     # Test with default bounds [0, 1]
@@ -2364,11 +2370,21 @@ if __name__ == "__main__":
     print("RUNNING SIMULATION WITH PARALLEL PROCESSING")
     print("=" * 60)
     
+    # Example of multiple function configurations - user must specify all function types
+    function_configs = [
+        {
+            'name': 'basic_binary_states',
+            'p': 'logistic',
+            'm': 'linear', 
+            'e': 'power',
+            'u': 'exponential',
+            'f': 'binary_states',
+            'c': 'linear'
+        }
+    ]
+    
     results = run_simulation(
-        state_spaces=[
-            {'name': 'binary', 'f': 'binary_states'},
-            {'name': 'custom_discrete', 'f': 'custom_discrete'}
-        ],
+        function_configs=function_configs,
         include_sensitivity=False,
         params=required_params,
         logger=logger,
