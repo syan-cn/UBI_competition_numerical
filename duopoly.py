@@ -13,6 +13,9 @@ from logger import SimulationLogger
 from pathlib import Path
 import datetime
 from itertools import product
+import multiprocessing as mp
+from functools import partial
+import time
 
 # ============================================================================
 # DISCRETE STATE SPACE
@@ -963,50 +966,325 @@ class DuopolySolver:
                     })
         return contracts
 
-    def brute_force_duopoly(self, logger=None):
+    def _process_contract_parallel(self, args):
         """
-        Brute-force grid search for both insurers, find all Pareto optimal equilibria.
-        Returns a list of Pareto optimal contract pairs and their outcomes.
+        Helper function for parallel processing of individual contracts.
+        
+        Args:
+            args: Tuple containing (insurer_id, phi1, phi2_tuple, delta, theta_grid, a_min, a_max, params)
+            
+        Returns:
+            Contract dictionary if feasible, None otherwise
         """
+        insurer_id, phi1, phi2_tuple, delta, theta_grid, a_min, a_max, params = args
+        
+        # Create a temporary solver instance for this worker
+        # We need to recreate the functions and solver for multiprocessing
+        function_config = {
+            'p': 'logistic',
+            'm': 'linear', 
+            'e': 'power',
+            'u': 'logarithmic',
+            'f': 'binary_states',
+            'c': 'linear'
+        }
+        functions = FlexibleFunctions(function_config)
+        temp_solver = DuopolySolver(functions, params)
+        
+        phi2_values = np.array(phi2_tuple)
+        a_schedule = []
+        feasible = True
+        
+        for theta in theta_grid:
+            # Solve incentive constraint = 0 for a in action bounds
+            def ic_func(a):
+                return temp_solver.incentive_constraint(a, phi1, phi2_values, delta, theta)
+            try:
+                sol = root_scalar(ic_func, bracket=(a_min, a_max), method='brentq')
+                if not sol.converged:
+                    feasible = False
+                    break
+                a_schedule.append(sol.root)
+            except Exception as e:
+                feasible = False
+                break
+                
+        if feasible:
+            a_schedule = np.array(a_schedule)
+            utilities = temp_solver.compute_utility_grid(insurer_id, a_schedule, phi1, phi2_values)
+            # Compute expected profit for this contract (single-insurer, so use uniform choice probs)
+            uniform_choice_probs = np.ones(len(theta_grid)) / len(theta_grid)
+            expected_profit = temp_solver.compute_expected_profit(insurer_id, a_schedule, phi1, phi2_values, uniform_choice_probs)
+            
+            return {
+                'phi1': phi1,
+                'phi2': phi2_values,
+                'a_schedule': a_schedule,
+                'utilities': utilities,
+                'premium': phi1,
+                'indemnity_values': phi2_values,
+                'expected_profit': expected_profit
+            }
+        else:
+            return None
+
+    @staticmethod
+    def _process_contract_parallel_static(args):
+        """
+        Static helper function for parallel processing of individual contracts.
+        
+        Args:
+            args: Tuple containing (insurer_id, phi1, phi2_tuple, delta, theta_grid, a_min, a_max, params, function_config)
+            
+        Returns:
+            Contract dictionary if feasible, None otherwise
+        """
+        insurer_id, phi1, phi2_tuple, delta, theta_grid, a_min, a_max, params, function_config = args
+        
+        # Create a temporary solver instance for this worker
+        functions = FlexibleFunctions(function_config)
+        temp_solver = DuopolySolver(functions, params)
+        
+        phi2_values = np.array(phi2_tuple)
+        a_schedule = []
+        feasible = True
+        
+        for theta in theta_grid:
+            # Solve incentive constraint = 0 for a in action bounds
+            def ic_func(a):
+                return temp_solver.incentive_constraint(a, phi1, phi2_values, delta, theta)
+            try:
+                sol = root_scalar(ic_func, bracket=(a_min, a_max), method='brentq')
+                if not sol.converged:
+                    feasible = False
+                    break
+                a_schedule.append(sol.root)
+            except Exception as e:
+                feasible = False
+                break
+                
+        if feasible:
+            a_schedule = np.array(a_schedule)
+            utilities = temp_solver.compute_utility_grid(insurer_id, a_schedule, phi1, phi2_values)
+            # Compute expected profit for this contract (single-insurer, so use uniform choice probs)
+            uniform_choice_probs = np.ones(len(theta_grid)) / len(theta_grid)
+            expected_profit = temp_solver.compute_expected_profit(insurer_id, a_schedule, phi1, phi2_values, uniform_choice_probs)
+            
+            return {
+                'phi1': phi1,
+                'phi2': phi2_values,
+                'a_schedule': a_schedule,
+                'utilities': utilities,
+                'premium': phi1,
+                'indemnity_values': phi2_values,
+                'expected_profit': expected_profit
+            }
+        else:
+            return None
+
+    def grid_search_contracts_parallel(self, insurer_id: int, phi1_grid, phi2_grid, logger=None, n_jobs=None):
+        """
+        Parallel brute-force grid search for all feasible contracts for one insurer.
+        
+        Args:
+            insurer_id: 1 or 2 for the insurer
+            phi1_grid: Grid of premium values
+            phi2_grid: Grid of indemnity value tuples
+            logger: Optional logger instance
+            n_jobs: Number of parallel jobs (default: number of CPU cores)
+            
+        Returns:
+            List of dicts: {'phi1': ..., 'phi2': ..., 'a_schedule': ..., 'utilities': ..., ...}
+        """
+        if insurer_id == 1:
+            delta = self.delta1
+        else:
+            delta = self.delta2
+            
+        if n_jobs is None:
+            n_jobs = mp.cpu_count()
+            
+        print(f"Starting parallel grid search for insurer {insurer_id} with {n_jobs} workers...")
+        start_time = time.time()
+        
+        # Get the function configuration from the current solver
+        function_config = self.get_function_config()
+        
+        # Prepare arguments for parallel processing
+        args_list = []
+        for phi1 in phi1_grid:
+            for phi2_tuple in phi2_grid:
+                args = (insurer_id, phi1, phi2_tuple, delta, self.theta_grid, 
+                       self.a_min, self.a_max, self.params, function_config)
+                args_list.append(args)
+        
+        # Use multiprocessing to process contracts in parallel
+        with mp.Pool(processes=n_jobs) as pool:
+            results = pool.map(DuopolySolver._process_contract_parallel_static, args_list)
+        
+        # Filter out None results (infeasible contracts)
+        contracts = [contract for contract in results if contract is not None]
+        
+        end_time = time.time()
+        print(f"Parallel grid search completed for insurer {insurer_id} in {end_time - start_time:.2f} seconds")
+        print(f"Found {len(contracts)} feasible contracts out of {len(args_list)} total combinations")
+        
+        return contracts
+
+    def get_function_config(self):
+        """Get the function configuration from the current solver."""
+        return self.functions.config
+
+    def _process_contract_pair_parallel(self, args):
+        """
+        Helper function for parallel processing of contract pairs.
+        
+        Args:
+            args: Tuple containing (c1, c2, V0, mu, params)
+            
+        Returns:
+            Result dictionary for the contract pair
+        """
+        c1, c2, V0, mu, params = args
+        
+        # Create temporary solver for this worker
+        function_config = {
+            'p': 'logistic',
+            'm': 'linear', 
+            'e': 'power',
+            'u': 'logarithmic',
+            'f': 'binary_states',
+            'c': 'linear'
+        }
+        functions = FlexibleFunctions(function_config)
+        temp_solver = DuopolySolver(functions, params)
+        
+        V1 = c1['utilities']
+        V2 = c2['utilities']
+        
+        # Logit choice probabilities
+        P0, P1, P2 = FlexibleFunctions.choice_probabilities(V0, V1, V2, mu)
+        profit_1 = temp_solver.compute_expected_profit(1, c1['a_schedule'], c1['phi1'], c1['phi2'], P1)
+        profit_2 = temp_solver.compute_expected_profit(2, c2['a_schedule'], c2['phi1'], c2['phi2'], P2)
+        
+        # Add profit_1, profit_2, and expected_profit to insurer dicts for downstream compatibility
+        c1_copy = dict(c1)  # Copy to avoid mutating original
+        c2_copy = dict(c2)
+        c1_copy['profit_1'] = profit_1
+        c1_copy['expected_profit'] = profit_1
+        c2_copy['profit_2'] = profit_2
+        c2_copy['expected_profit'] = profit_2
+        
+        return {
+            'insurer1': c1_copy,
+            'insurer2': c2_copy,
+            'choice_probabilities': {'P0': P0, 'P1': P1, 'P2': P2},
+            'utilities': {'V0': V0, 'V1': V1, 'V2': V2},
+            'profit_1': profit_1,
+            'profit_2': profit_2
+        }
+
+    @staticmethod
+    def _process_contract_pair_parallel_static(args):
+        """
+        Static helper function for parallel processing of contract pairs.
+        
+        Args:
+            args: Tuple containing (c1, c2, V0, mu, params, function_config)
+            
+        Returns:
+            Result dictionary for the contract pair
+        """
+        c1, c2, V0, mu, params, function_config = args
+        
+        # Create temporary solver for this worker
+        functions = FlexibleFunctions(function_config)
+        temp_solver = DuopolySolver(functions, params)
+        
+        V1 = c1['utilities']
+        V2 = c2['utilities']
+        
+        # Logit choice probabilities
+        P0, P1, P2 = FlexibleFunctions.choice_probabilities(V0, V1, V2, mu)
+        profit_1 = temp_solver.compute_expected_profit(1, c1['a_schedule'], c1['phi1'], c1['phi2'], P1)
+        profit_2 = temp_solver.compute_expected_profit(2, c2['a_schedule'], c2['phi1'], c2['phi2'], P2)
+        
+        # Add profit_1, profit_2, and expected_profit to insurer dicts for downstream compatibility
+        c1_copy = dict(c1)  # Copy to avoid mutating original
+        c2_copy = dict(c2)
+        c1_copy['profit_1'] = profit_1
+        c1_copy['expected_profit'] = profit_1
+        c2_copy['profit_2'] = profit_2
+        c2_copy['expected_profit'] = profit_2
+        
+        return {
+            'insurer1': c1_copy,
+            'insurer2': c2_copy,
+            'choice_probabilities': {'P0': P0, 'P1': P1, 'P2': P2},
+            'utilities': {'V0': V0, 'V1': V1, 'V2': V2},
+            'profit_1': profit_1,
+            'profit_2': profit_2
+        }
+
+    def brute_force_duopoly(self, logger=None, n_jobs=None):
+        """
+        Parallel brute-force grid search for both insurers, find all Pareto optimal equilibria.
+        
+        Args:
+            logger: Optional logger instance
+            n_jobs: Number of parallel jobs (default: number of CPU cores)
+            
+        Returns:
+            List of Pareto optimal contract pairs and their outcomes
+        """
+        if n_jobs is None:
+            n_jobs = mp.cpu_count()
+            
+        print(f"Starting parallel duopoly grid search with {n_jobs} workers...")
+        start_time = time.time()
+        
         # Get grid parameters
         n_phi1 = int(self.params.get('n_phi1_grid', 50))
         n_phi2 = int(self.params.get('n_phi2_grid', 50))
         phi1_grid = np.linspace(0.1, self.s, n_phi1)
         phi2_grid_1d = np.linspace(0.0, self.s, n_phi2)
+        
         # Cartesian product for phi2(z) for all states
         phi2_grid = list(product(phi2_grid_1d, repeat=self.n_states))
-        # Enumerate all contracts for each insurer
-        contracts_1 = self.grid_search_contracts(1, phi1_grid, phi2_grid, logger=logger)
-        contracts_2 = self.grid_search_contracts(2, phi1_grid, phi2_grid, logger=logger)
-        # Evaluate all contract pairs
-        results = []
+        
+        # Get the function configuration from the current solver
+        function_config = self.get_function_config()
+        
+        # Enumerate all contracts for each insurer in parallel
+        print("Computing contracts for insurer 1...")
+        contracts_1 = self.grid_search_contracts_parallel(1, phi1_grid, phi2_grid, logger=logger, n_jobs=n_jobs)
+        
+        print("Computing contracts for insurer 2...")
+        contracts_2 = self.grid_search_contracts_parallel(2, phi1_grid, phi2_grid, logger=logger, n_jobs=n_jobs)
+        
+        # Evaluate all contract pairs in parallel
+        print("Evaluating contract pairs...")
+        V0 = self.compute_reservation_utility_grid()
         mu = self.params.get('xi_scale')
+        
+        # Prepare arguments for parallel processing of contract pairs
+        args_list = []
         for c1 in contracts_1:
             for c2 in contracts_2:
-                V0 = self.compute_reservation_utility_grid()
-                V1 = c1['utilities']
-                V2 = c2['utilities']
-                # Logit choice probabilities
-                P0, P1, P2 = FlexibleFunctions.choice_probabilities(V0, V1, V2, mu)
-                profit_1 = self.compute_expected_profit(1, c1['a_schedule'], c1['phi2'], c1['phi2'], P1)
-                profit_2 = self.compute_expected_profit(2, c2['a_schedule'], c2['phi2'], c2['phi2'], P2)
-                # Add profit_1, profit_2, and expected_profit to insurer dicts for downstream compatibility
-                c1 = dict(c1)  # Copy to avoid mutating original
-                c2 = dict(c2)
-                c1['profit_1'] = profit_1
-                c1['expected_profit'] = profit_1
-                c2['profit_2'] = profit_2
-                c2['expected_profit'] = profit_2
-                results.append({
-                    'insurer1': c1,
-                    'insurer2': c2,
-                    'choice_probabilities': {'P0': P0, 'P1': P1, 'P2': P2},
-                    'utilities': {'V0': V0, 'V1': V1, 'V2': V2},
-                    'profit_1': profit_1,
-                    'profit_2': profit_2
-                })
+                args = (c1, c2, V0, mu, self.params, function_config)
+                args_list.append(args)
+        
+        # Use multiprocessing to process contract pairs in parallel
+        with mp.Pool(processes=n_jobs) as pool:
+            results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
+        
         # Find Pareto optimal contract pairs
         pareto = self.pareto_optimal_solutions(results)
+        
+        end_time = time.time()
+        print(f"Parallel duopoly grid search completed in {end_time - start_time:.2f} seconds")
+        print(f"Evaluated {len(results)} contract pairs, found {len(pareto)} Pareto optimal solutions")
+        
         return pareto
 
     @staticmethod
@@ -1030,6 +1308,7 @@ class DuopolySolver:
             if not dominated:
                 pareto.append(res_i)
         return pareto
+
 
 
 # ============================================================================
@@ -1339,7 +1618,7 @@ class InsuranceSimulator:
 # EXAMPLE USAGE
 # ============================================================================
 
-def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True, params=None, logger: SimulationLogger = None):
+def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True, params=None, logger: SimulationLogger = None, use_parallel=True, n_jobs=None):
     """
     Unified simulation function that can handle single or multiple state space configurations.
     
@@ -1370,6 +1649,8 @@ def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True,
                - c_lambda: Parameter for insurer cost function
                - xi_scale: Scale parameter for logit choice model
         logger: Optional SimulationLogger instance for logging
+        use_parallel: Whether to use parallel processing (default: True)
+        n_jobs: Number of parallel jobs (default: number of CPU cores)
     Returns:
         Dictionary containing simulation results
     """
@@ -1420,7 +1701,9 @@ def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True,
     logger.log_simulation_settings({
         'state_spaces': state_spaces,
         'include_sensitivity': include_sensitivity,
-        'save_plots': save_plots
+        'save_plots': save_plots,
+        'use_parallel': use_parallel,
+        'n_jobs': n_jobs
     })
     logger.log_parameters(params)
     # ------------------------------------------------------------------
@@ -1438,9 +1721,15 @@ def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True,
         function_config['f'] = state_config['f']
         functions = FlexibleFunctions(function_config)
         solver = DuopolySolver(functions, params)
-        # --- Use brute-force grid search instead of continuous optimization ---
-        print("Using brute-force grid search for contracts...")
-        pareto_solutions = solver.brute_force_duopoly(logger=logger)
+        
+        # Choose between parallel and sequential grid search
+        if use_parallel:
+            print("Using parallel brute-force grid search for contracts...")
+            pareto_solutions = solver.brute_force_duopoly(logger=logger, n_jobs=n_jobs)
+        else:
+            print("Using sequential brute-force grid search for contracts...")
+            pareto_solutions = solver.brute_force_duopoly(logger=logger)
+            
         results[state_config['name']] = pareto_solutions
         if save_plots:
             # Only plot the first Pareto solution for illustration
@@ -1490,7 +1779,10 @@ if __name__ == "__main__":
         'f_z_values': [0.0, 1.0, 2.0],  # State values for custom discrete
         'f_base_probs': [0.5, 0.3, 0.2],  # Base probabilities for custom discrete
         'f_p_a': 0.1,           # Action effect parameter for custom discrete
-        'f_p_delta': 0.05       # Monitoring effect parameter for custom discrete
+        'f_p_delta': 0.05,      # Monitoring effect parameter for custom discrete
+        # Grid search parameters (smaller for faster testing)
+        'n_phi1_grid': 20,      # Number of premium grid points
+        'n_phi2_grid': 10       # Number of indemnity grid points
     }
     
     # Test action bounds functionality
@@ -1518,6 +1810,12 @@ if __name__ == "__main__":
     
     # Initialize logger
     logger = SimulationLogger(experiment_name="duopoly_example_run")
+    
+    # Run simulation with parallel processing
+    print("\n" + "=" * 60)
+    print("RUNNING SIMULATION WITH PARALLEL PROCESSING")
+    print("=" * 60)
+    
     results = run_simulation(
         state_spaces=[
             {'name': 'binary', 'f': 'binary_states'},
@@ -1525,8 +1823,11 @@ if __name__ == "__main__":
         ],
         include_sensitivity=False,
         params=required_params,
-        logger=logger
+        logger=logger,
+        use_parallel=True,
+        n_jobs=None  # Use all available cores
     )
+    
     print("\n" + "=" * 60)
     print("Simulations completed! Check the generated plots and logs.")
     print("=" * 60)
