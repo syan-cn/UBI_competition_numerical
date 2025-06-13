@@ -193,7 +193,7 @@ class SimulationLogger:
         self.simulation_data['results'][state_name][f'insurer_{insurer_id}'] = {
             'premium': float(result.get('premium', 0)),
             'indemnity_values': result.get('indemnity_values', []).tolist() if isinstance(result.get('indemnity_values'), np.ndarray) else result.get('indemnity_values', []),
-            'action_schedule': result.get('action_schedule', []).tolist() if isinstance(result.get('action_schedule'), np.ndarray) else result.get('action_schedule', []),
+            'action_schedule': result.get('a_schedule', []).tolist() if isinstance(result.get('a_schedule'), np.ndarray) else result.get('a_schedule', []),
             'expected_profit': float(result.get('expected_profit', 0)),
             'optimization_info': optimization_info or {}
         }
@@ -201,7 +201,7 @@ class SimulationLogger:
         self.logger.info(f"Insurer {insurer_id} optimization completed:")
         self.logger.info(f"  Premium: {result.get('premium', 0):.2f}")
         self.logger.info(f"  Expected Profit: {result.get('expected_profit', 0):.2f}")
-        self.logger.info(f"  Average Action: {np.mean(result.get('action_schedule', [0])):.4f}")
+        self.logger.info(f"  Average Action: {np.mean(result.get('a_schedule', [0])):.4f}")
         self.logger.info(f"  Average Indemnity: {np.mean(result.get('indemnity_values', [0])):.2f}")
     
     def log_duopoly_solution(self, solution: Dict[str, Any], state_name: str = "default"):
@@ -217,13 +217,13 @@ class SimulationLogger:
             'insurer1': {
                 'premium': float(solution['insurer1']['premium']),
                 'indemnity_values': solution['insurer1']['indemnity_values'].tolist() if isinstance(solution['insurer1']['indemnity_values'], np.ndarray) else solution['insurer1']['indemnity_values'],
-                'action_schedule': solution['insurer1']['action_schedule'].tolist() if isinstance(solution['insurer1']['action_schedule'], np.ndarray) else solution['insurer1']['action_schedule'],
+                'action_schedule': solution['insurer1']['a_schedule'].tolist() if isinstance(solution['insurer1']['a_schedule'], np.ndarray) else solution['insurer1']['a_schedule'],
                 'expected_profit': float(solution['insurer1']['expected_profit'])
             },
             'insurer2': {
                 'premium': float(solution['insurer2']['premium']),
                 'indemnity_values': solution['insurer2']['indemnity_values'].tolist() if isinstance(solution['insurer2']['indemnity_values'], np.ndarray) else solution['insurer2']['indemnity_values'],
-                'action_schedule': solution['insurer2']['action_schedule'].tolist() if isinstance(solution['insurer2']['action_schedule'], np.ndarray) else solution['insurer2']['action_schedule'],
+                'action_schedule': solution['insurer2']['a_schedule'].tolist() if isinstance(solution['insurer2']['a_schedule'], np.ndarray) else solution['insurer2']['a_schedule'],
                 'expected_profit': float(solution['insurer2']['expected_profit'])
             },
             'market_share': solution.get('market_share', {}),
@@ -232,11 +232,11 @@ class SimulationLogger:
         
         self.logger.info(f"Duopoly solution completed for {state_name}:")
         self.logger.info(f"  Insurer 1 - Premium: {solution['insurer1']['premium']:.2f}, Profit: {solution['insurer1']['expected_profit']:.2f}")
-        self.logger.info(f"  Insurer 1 - Action Schedule: {np.array2string(solution['insurer1']['action_schedule'], precision=4, separator=', ')}")
+        self.logger.info(f"  Insurer 1 - Action Schedule: {np.array2string(solution['insurer1']['a_schedule'], precision=4, separator=', ')}")
         self.logger.info(f"  Insurer 1 - Indemnity Values: {np.array2string(solution['insurer1']['indemnity_values'], precision=2, separator=', ')}")
         
         self.logger.info(f"  Insurer 2 - Premium: {solution['insurer2']['premium']:.2f}, Profit: {solution['insurer2']['expected_profit']:.2f}")
-        self.logger.info(f"  Insurer 2 - Action Schedule: {np.array2string(solution['insurer2']['action_schedule'], precision=4, separator=', ')}")
+        self.logger.info(f"  Insurer 2 - Action Schedule: {np.array2string(solution['insurer2']['a_schedule'], precision=4, separator=', ')}")
         self.logger.info(f"  Insurer 2 - Indemnity Values: {np.array2string(solution['insurer2']['indemnity_values'], precision=2, separator=', ')}")
         
         self.logger.info(f"  Total Market Profit: {solution.get('total_profit', 0):.2f}")
