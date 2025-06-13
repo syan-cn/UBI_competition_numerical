@@ -1226,13 +1226,18 @@ class DuopolySolver:
             'profit_2': profit_2
         }
 
-    def brute_force_duopoly(self, logger=None, n_jobs=None):
+    def brute_force_duopoly(self, logger=None, n_jobs=None, evaluation_method='simple'):
         """
         Parallel brute-force grid search for both insurers, find all Pareto optimal equilibria.
         
         Args:
             logger: Optional logger instance
             n_jobs: Number of parallel jobs (default: number of CPU cores)
+            evaluation_method: Method for contract pair evaluation:
+                              'original' - Evaluate all pairs at once
+                              'simple' - Simple efficient method with pre-filtering
+                              'incremental' - Incremental Pareto method with chunked processing
+                              'divide_conquer' - Divide-and-conquer parallel evaluation
             
         Returns:
             List of Pareto optimal contract pairs and their outcomes
@@ -1240,7 +1245,7 @@ class DuopolySolver:
         if n_jobs is None:
             n_jobs = mp.cpu_count()
             
-        print(f"Starting parallel duopoly grid search with {n_jobs} workers...")
+        print(f"Starting parallel duopoly grid search with {n_jobs} workers using {evaluation_method} method...")
         start_time = time.time()
         
         # Get grid parameters
@@ -1262,10 +1267,32 @@ class DuopolySolver:
         print("Computing contracts for insurer 2...")
         contracts_2 = self.grid_search_contracts_parallel(2, phi1_grid, phi2_grid, logger=logger, n_jobs=n_jobs)
         
-        # Evaluate all contract pairs in parallel
-        print("Evaluating contract pairs...")
+        print(f"Generated {len(contracts_1)} contracts for insurer 1, {len(contracts_2)} for insurer 2")
+        
+        # Evaluate contract pairs using selected method
         V0 = self.compute_reservation_utility_grid()
         mu = self.params.get('xi_scale')
+        
+        if evaluation_method == 'original':
+            pareto = self._evaluate_all_pairs_original(contracts_1, contracts_2, V0, mu, function_config, n_jobs)
+        elif evaluation_method == 'simple':
+            pareto = self.simple_efficient_contract_evaluation(contracts_1, contracts_2, V0, mu, n_jobs=n_jobs)
+        elif evaluation_method == 'incremental':
+            pareto = self.incremental_pareto_evaluation(contracts_1, contracts_2, V0, mu, n_jobs=n_jobs)
+        elif evaluation_method == 'divide_conquer':
+            pareto = self.divide_conquer_evaluation(contracts_1, contracts_2, V0, mu, n_jobs=n_jobs)
+        else:
+            raise ValueError(f"Unknown evaluation method: {evaluation_method}")
+        
+        end_time = time.time()
+        print(f"Parallel duopoly grid search completed in {end_time - start_time:.2f} seconds")
+        print(f"Found {len(pareto)} Pareto optimal solutions using {evaluation_method} method")
+        
+        return pareto
+
+    def _evaluate_all_pairs_original(self, contracts_1, contracts_2, V0, mu, function_config, n_jobs):
+        """Original method: evaluate all contract pairs at once."""
+        print("Evaluating all contract pairs at once...")
         
         # Prepare arguments for parallel processing of contract pairs
         args_list = []
@@ -1274,18 +1301,534 @@ class DuopolySolver:
                 args = (c1, c2, V0, mu, self.params, function_config)
                 args_list.append(args)
         
+        print(f"Evaluating {len(args_list)} contract pairs...")
+        
         # Use multiprocessing to process contract pairs in parallel
         with mp.Pool(processes=n_jobs) as pool:
             results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
         
         # Find Pareto optimal contract pairs
         pareto = self.pareto_optimal_solutions(results)
+        return pareto
+
+    def simple_efficient_contract_evaluation(self, contracts_1, contracts_2, V0, mu, n_jobs=None):
+        """
+        Simple efficient method with pre-filtering and optimized batching.
+        
+        Args:
+            contracts_1: List of contracts for insurer 1
+            contracts_2: List of contracts for insurer 2
+            V0: Reservation utility grid
+            mu: Logit scale parameter
+            n_jobs: Number of parallel jobs
+            
+        Returns:
+            List of Pareto optimal contract pairs
+        """
+        if n_jobs is None:
+            n_jobs = mp.cpu_count()
+            
+        print("Using simple efficient contract evaluation...")
+        start_time = time.time()
+        
+        # Step 1: Pre-filter contracts to remove clearly dominated ones
+        print("Pre-filtering contracts...")
+        filtered_1 = self._prefilter_contracts(contracts_1)
+        filtered_2 = self._prefilter_contracts(contracts_2)
+        
+        print(f"After pre-filtering: {len(filtered_1)} contracts for insurer 1, {len(filtered_2)} for insurer 2")
+        reduction_1 = (1 - len(filtered_1) / len(contracts_1)) * 100
+        reduction_2 = (1 - len(filtered_2) / len(contracts_2)) * 100
+        print(f"Reduced contract space by {reduction_1:.1f}% and {reduction_2:.1f}% respectively")
+        
+        # Step 2: Evaluate contract pairs with optimized batching
+        function_config = self.get_function_config()
+        batch_size = min(1000, len(filtered_1) * len(filtered_2) // (n_jobs * 4))  # Adaptive batch size
+        
+        all_pairs = [(c1, c2) for c1 in filtered_1 for c2 in filtered_2]
+        print(f"Evaluating {len(all_pairs)} filtered contract pairs in batches of {batch_size}...")
+        
+        all_results = []
+        for i in range(0, len(all_pairs), batch_size):
+            batch = all_pairs[i:i + batch_size]
+            args_list = [(c1, c2, V0, mu, self.params, function_config) for c1, c2 in batch]
+            
+            with mp.Pool(processes=n_jobs) as pool:
+                batch_results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
+            
+            all_results.extend(batch_results)
+            
+            if (i // batch_size + 1) % 10 == 0:  # Progress indicator
+                print(f"Processed {i + len(batch)}/{len(all_pairs)} pairs...")
+        
+        # Step 3: Find Pareto optimal solutions
+        pareto = self.pareto_optimal_solutions(all_results)
         
         end_time = time.time()
-        print(f"Parallel duopoly grid search completed in {end_time - start_time:.2f} seconds")
-        print(f"Evaluated {len(results)} contract pairs, found {len(pareto)} Pareto optimal solutions")
+        print(f"Simple efficient evaluation completed in {end_time - start_time:.2f} seconds")
         
         return pareto
+
+    def incremental_pareto_evaluation(self, contracts_1, contracts_2, V0, mu, n_jobs=None, chunk_size=500):
+        """
+        Incremental Pareto method: builds Pareto frontier incrementally by processing contracts in chunks.
+        
+        Args:
+            contracts_1: List of contracts for insurer 1
+            contracts_2: List of contracts for insurer 2
+            V0: Reservation utility grid
+            mu: Logit scale parameter
+            n_jobs: Number of parallel jobs
+            chunk_size: Size of each processing chunk
+            
+        Returns:
+            List of Pareto optimal contract pairs
+        """
+        if n_jobs is None:
+            n_jobs = mp.cpu_count()
+            
+        print("Using incremental Pareto evaluation...")
+        start_time = time.time()
+        
+        function_config = self.get_function_config()
+        running_pareto = []
+        
+        # Process contracts in chunks to maintain memory efficiency
+        total_pairs = len(contracts_1) * len(contracts_2)
+        processed_pairs = 0
+        
+        for i in range(0, len(contracts_1), chunk_size):
+            chunk_1 = contracts_1[i:i + chunk_size]
+            
+            for j in range(0, len(contracts_2), chunk_size):
+                chunk_2 = contracts_2[j:j + chunk_size]
+                
+                # Evaluate this chunk
+                chunk_pairs = [(c1, c2) for c1 in chunk_1 for c2 in chunk_2]
+                args_list = [(c1, c2, V0, mu, self.params, function_config) for c1, c2 in chunk_pairs]
+                
+                with mp.Pool(processes=n_jobs) as pool:
+                    chunk_results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
+                
+                # Find Pareto optimal solutions in this chunk
+                chunk_pareto = self.pareto_optimal_solutions(chunk_results)
+                
+                # Merge with running Pareto frontier
+                combined_results = running_pareto + chunk_pareto
+                running_pareto = self.pareto_optimal_solutions(combined_results)
+                
+                processed_pairs += len(chunk_pairs)
+                if processed_pairs % (chunk_size * chunk_size * 5) == 0:  # Progress indicator
+                    print(f"Processed {processed_pairs}/{total_pairs} pairs, current Pareto size: {len(running_pareto)}")
+        
+        end_time = time.time()
+        print(f"Incremental Pareto evaluation completed in {end_time - start_time:.2f} seconds")
+        print(f"Final Pareto frontier contains {len(running_pareto)} solutions")
+        
+        return running_pareto
+
+    def divide_conquer_evaluation(self, contracts_1, contracts_2, V0, mu, n_jobs=None, max_depth=3):
+        """
+        Divide-and-conquer parallel evaluation: recursively partitions contract pairs into subsets,
+        evaluates each subset in parallel, and merges Pareto frontiers.
+        
+        Args:
+            contracts_1: List of contracts for insurer 1
+            contracts_2: List of contracts for insurer 2
+            V0: Reservation utility grid
+            mu: Logit scale parameter
+            n_jobs: Number of parallel jobs
+            max_depth: Maximum recursion depth
+            
+        Returns:
+            List of Pareto optimal contract pairs
+        """
+        if n_jobs is None:
+            n_jobs = mp.cpu_count()
+            
+        print("Using divide-and-conquer evaluation...")
+        start_time = time.time()
+        
+        function_config = self.get_function_config()
+        
+        def evaluate_subset(subset_1, subset_2, depth=0):
+            """Recursively evaluate a subset of contracts."""
+            subset_size = len(subset_1) * len(subset_2)
+            
+            # Base case: if subset is small enough or max depth reached, evaluate directly
+            if subset_size <= 1000 or depth >= max_depth:
+                pairs = [(c1, c2) for c1 in subset_1 for c2 in subset_2]
+                args_list = [(c1, c2, V0, mu, self.params, function_config) for c1, c2 in pairs]
+                
+                with mp.Pool(processes=min(n_jobs, len(args_list))) as pool:
+                    results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
+                
+                return self.pareto_optimal_solutions(results)
+            
+            # Recursive case: divide the problem
+            mid_1 = len(subset_1) // 2
+            mid_2 = len(subset_2) // 2
+            
+            # Create four quadrants
+            quadrants = [
+                (subset_1[:mid_1], subset_2[:mid_2]),
+                (subset_1[:mid_1], subset_2[mid_2:]),
+                (subset_1[mid_1:], subset_2[:mid_2]),
+                (subset_1[mid_1:], subset_2[mid_2:])
+            ]
+            
+            # Evaluate quadrants in parallel using multiprocessing
+            with mp.Pool(processes=min(n_jobs, 4)) as pool:
+                quadrant_results = pool.starmap(
+                    lambda s1, s2: evaluate_subset(s1, s2, depth + 1),
+                    quadrants
+                )
+            
+            # Merge Pareto frontiers from all quadrants
+            all_results = []
+            for quad_pareto in quadrant_results:
+                all_results.extend(quad_pareto)
+            
+            return self.pareto_optimal_solutions(all_results)
+        
+        # Sort contracts by profit for better partitioning
+        contracts_1_sorted = sorted(contracts_1, key=lambda x: x.get('expected_profit', 0), reverse=True)
+        contracts_2_sorted = sorted(contracts_2, key=lambda x: x.get('expected_profit', 0), reverse=True)
+        
+        pareto = evaluate_subset(contracts_1_sorted, contracts_2_sorted)
+        
+        end_time = time.time()
+        print(f"Divide-and-conquer evaluation completed in {end_time - start_time:.2f} seconds")
+        
+        return pareto
+
+    def _prefilter_contracts(self, contracts):
+        """
+        Pre-filter contracts to remove clearly dominated ones.
+        
+        Args:
+            contracts: List of contract dictionaries
+            
+        Returns:
+            List of filtered contracts
+        """
+        if not contracts:
+            return contracts
+        
+        # Extract key metrics for filtering
+        profits = [c.get('expected_profit', 0) for c in contracts]
+        premiums = [c.get('phi1', 0) for c in contracts]
+        
+        # Filter out contracts with very low profits (bottom 25%)
+        profit_threshold = np.percentile(profits, 25)
+        
+        # Filter out contracts with extreme premiums (top/bottom 5%)
+        premium_low = np.percentile(premiums, 5)
+        premium_high = np.percentile(premiums, 95)
+        
+        filtered = []
+        for i, contract in enumerate(contracts):
+            profit = profits[i]
+            premium = premiums[i]
+            
+            # Keep contract if it meets basic criteria
+            if (profit >= profit_threshold and 
+                premium_low <= premium <= premium_high):
+                filtered.append(contract)
+        
+        # Always keep at least top 50% by profit to avoid over-filtering
+        if len(filtered) < len(contracts) * 0.5:
+            contracts_by_profit = sorted(contracts, key=lambda x: x.get('expected_profit', 0), reverse=True)
+            filtered = contracts_by_profit[:len(contracts) // 2]
+        
+        return filtered
+
+    def _select_contract_subset(self, contracts_1, contracts_2, existing_pareto, subset_size):
+        """
+        Select a subset of contracts for evaluation based on existing Pareto solutions.
+        
+        Args:
+            contracts_1: All contracts for insurer 1
+            contracts_2: All contracts for insurer 2
+            existing_pareto: Existing Pareto optimal solutions
+            subset_size: Target subset size
+            
+        Returns:
+            Tuple of (subset_1, subset_2)
+        """
+        if not existing_pareto:
+            # First iteration: random selection
+            import random
+            subset_1 = random.sample(contracts_1, min(subset_size // 2, len(contracts_1)))
+            subset_2 = random.sample(contracts_2, min(subset_size // 2, len(contracts_2)))
+            return subset_1, subset_2
+        
+        # Subsequent iterations: focus on promising regions
+        # Extract features from existing Pareto solutions
+        pareto_features_1 = self._extract_contract_features([p['insurer1'] for p in existing_pareto])
+        pareto_features_2 = self._extract_contract_features([p['insurer2'] for p in existing_pareto])
+        
+        # Find contracts similar to Pareto solutions
+        subset_1 = self._find_similar_contracts(contracts_1, pareto_features_1, subset_size // 2)
+        subset_2 = self._find_similar_contracts(contracts_2, pareto_features_2, subset_size // 2)
+        
+        return subset_1, subset_2
+
+    def _extract_contract_features(self, contracts):
+        """
+        Extract numerical features from contracts for similarity analysis.
+        
+        Args:
+            contracts: List of contract dictionaries
+            
+        Returns:
+            Array of features
+        """
+        features = []
+        for contract in contracts:
+            # Extract key features: premium, average indemnity, action schedule statistics
+            phi1 = contract['phi1']
+            phi2_mean = np.mean(contract['phi2'])
+            phi2_std = np.std(contract['phi2'])
+            a_mean = np.mean(contract['a_schedule'])
+            a_std = np.std(contract['a_schedule'])
+            
+            features.append([phi1, phi2_mean, phi2_std, a_mean, a_std])
+        
+        return np.array(features)
+
+    def _find_similar_contracts(self, contracts, pareto_features, n_contracts):
+        """
+        Find contracts similar to Pareto solutions using feature similarity.
+        
+        Args:
+            contracts: All available contracts
+            pareto_features: Features of Pareto solutions
+            n_contracts: Number of contracts to select
+            
+        Returns:
+            List of selected contracts
+        """
+        if len(contracts) <= n_contracts:
+            return contracts
+        
+        # Extract features from all contracts
+        all_features = self._extract_contract_features(contracts)
+        
+        # Calculate similarity to Pareto solutions
+        similarities = []
+        for i, contract_features in enumerate(all_features):
+            # Minimum distance to any Pareto solution
+            distances = np.linalg.norm(pareto_features - contract_features, axis=1)
+            min_distance = np.min(distances)
+            similarities.append((min_distance, i))
+        
+        # Select contracts with highest similarity (lowest distance)
+        similarities.sort()
+        selected_indices = [idx for _, idx in similarities[:n_contracts]]
+        
+        return [contracts[i] for i in selected_indices]
+
+    def _evaluate_contract_subset_parallel(self, subset_1, subset_2, V0, mu, 
+                                         function_config, n_jobs, evaluated_pairs):
+        """
+        Evaluate a subset of contract pairs in parallel with early termination.
+        
+        Args:
+            subset_1: Subset of contracts for insurer 1
+            subset_2: Subset of contracts for insurer 2
+            V0: Reservation utility grid
+            mu: Logit scale parameter
+            function_config: Function configuration
+            n_jobs: Number of parallel jobs
+            evaluated_pairs: Set of already evaluated pairs (for tracking)
+            
+        Returns:
+            List of evaluation results
+        """
+        # Prepare arguments for parallel processing
+        args_list = []
+        for c1 in subset_1:
+            for c2 in subset_2:
+                # Create unique identifier for this pair
+                pair_id = (id(c1), id(c2))
+                if pair_id not in evaluated_pairs:
+                    args = (c1, c2, V0, mu, self.params, function_config)
+                    args_list.append(args)
+                    evaluated_pairs.add(pair_id)
+        
+        if not args_list:
+            return []
+        
+        # Use multiprocessing to process contract pairs in parallel
+        with mp.Pool(processes=n_jobs) as pool:
+            results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
+        
+        return results
+
+    def _merge_pareto_solutions(self, existing_pareto, new_pareto):
+        """
+        Merge new Pareto solutions with existing ones, removing dominated solutions.
+        
+        Args:
+            existing_pareto: Existing Pareto optimal solutions
+            new_pareto: New Pareto optimal solutions
+            
+        Returns:
+            Merged list of Pareto optimal solutions
+        """
+        if not existing_pareto:
+            return new_pareto
+        
+        if not new_pareto:
+            return existing_pareto
+        
+        # Combine all solutions
+        all_solutions = existing_pareto + new_pareto
+        
+        # Find Pareto optimal subset
+        return self.pareto_optimal_solutions(all_solutions)
+
+    def adaptive_grid_search(self, insurer_id, phi1_grid, phi2_grid, 
+                           initial_grid_size=10, max_refinements=3, 
+                           convergence_threshold=0.05, n_jobs=None):
+        """
+        Adaptive grid search that starts with coarse grid and refines promising regions.
+        
+        Args:
+            insurer_id: 1 or 2 for the insurer
+            phi1_grid: Original phi1 grid
+            phi2_grid: Original phi2 grid
+            initial_grid_size: Size of initial coarse grid
+            max_refinements: Maximum number of refinement iterations
+            convergence_threshold: Threshold for convergence
+            n_jobs: Number of parallel jobs
+            
+        Returns:
+            List of feasible contracts
+        """
+        if n_jobs is None:
+            n_jobs = mp.cpu_count()
+            
+        print(f"Starting adaptive grid search for insurer {insurer_id}...")
+        
+        # Start with coarse grid
+        phi1_coarse = np.linspace(phi1_grid[0], phi1_grid[-1], initial_grid_size)
+        phi2_coarse = self._create_coarse_phi2_grid(phi2_grid, initial_grid_size)
+        
+        all_contracts = []
+        
+        for refinement in range(max_refinements):
+            print(f"Refinement {refinement + 1}/{max_refinements}")
+            
+            # Evaluate current grid
+            current_contracts = self.grid_search_contracts_parallel(
+                insurer_id, phi1_coarse, phi2_coarse, n_jobs=n_jobs
+            )
+            
+            all_contracts.extend(current_contracts)
+            
+            if refinement == max_refinements - 1:
+                break
+            
+            # Identify promising regions for refinement
+            promising_regions = self._identify_promising_regions(current_contracts)
+            
+            if not promising_regions:
+                print("No promising regions found for refinement")
+                break
+            
+            # Refine grid in promising regions
+            phi1_coarse, phi2_coarse = self._refine_grid_in_regions(
+                phi1_coarse, phi2_coarse, promising_regions
+            )
+            
+            print(f"Refined grid: {len(phi1_coarse)} phi1 values, {len(phi2_coarse)} phi2 combinations")
+        
+        return all_contracts
+
+    def _create_coarse_phi2_grid(self, phi2_grid, grid_size):
+        """
+        Create a coarse phi2 grid for initial evaluation.
+        
+        Args:
+            phi2_grid: Original phi2 grid
+            grid_size: Target grid size
+            
+        Returns:
+            Coarse phi2 grid
+        """
+        if len(phi2_grid) <= grid_size:
+            return phi2_grid
+        
+        # Sample evenly from the original grid
+        indices = np.linspace(0, len(phi2_grid) - 1, grid_size, dtype=int)
+        return [phi2_grid[i] for i in indices]
+
+    def _identify_promising_regions(self, contracts):
+        """
+        Identify promising regions based on contract performance.
+        
+        Args:
+            contracts: List of evaluated contracts
+            
+        Returns:
+            List of promising regions (phi1 ranges, phi2 ranges)
+        """
+        if not contracts:
+            return []
+        
+        # Extract performance metrics
+        profits = [c['expected_profit'] for c in contracts]
+        phi1_values = [c['phi1'] for c in contracts]
+        
+        # Find regions with high profits
+        profit_threshold = np.percentile(profits, 75)  # Top 25%
+        
+        promising_phi1 = []
+        for i, profit in enumerate(profits):
+            if profit >= profit_threshold:
+                promising_phi1.append(phi1_values[i])
+        
+        if not promising_phi1:
+            return []
+        
+        # Group into regions
+        regions = []
+        phi1_min, phi1_max = min(promising_phi1), max(promising_phi1)
+        regions.append({'phi1_range': (phi1_min, phi1_max)})
+        
+        return regions
+
+    def _refine_grid_in_regions(self, phi1_coarse, phi2_coarse, promising_regions):
+        """
+        Refine the grid in promising regions.
+        
+        Args:
+            phi1_coarse: Current coarse phi1 grid
+            phi2_coarse: Current coarse phi2 grid
+            promising_regions: List of promising regions
+            
+        Returns:
+            Tuple of (refined_phi1, refined_phi2)
+        """
+        refined_phi1 = list(phi1_coarse)
+        refined_phi2 = list(phi2_coarse)
+        
+        for region in promising_regions:
+            phi1_min, phi1_max = region['phi1_range']
+            
+            # Add more points in the promising region
+            region_points = 5  # Number of additional points to add
+            for i in range(region_points):
+                phi1_new = phi1_min + (phi1_max - phi1_min) * (i + 1) / (region_points + 1)
+                if phi1_new not in refined_phi1:
+                    refined_phi1.append(phi1_new)
+        
+        # Sort phi1 grid
+        refined_phi1.sort()
+        
+        return refined_phi1, refined_phi2
 
     @staticmethod
     def pareto_optimal_solutions(results):
@@ -1308,7 +1851,6 @@ class DuopolySolver:
             if not dominated:
                 pareto.append(res_i)
         return pareto
-
 
 
 # ============================================================================
@@ -1781,7 +2323,7 @@ if __name__ == "__main__":
         'f_p_a': 0.1,           # Action effect parameter for custom discrete
         'f_p_delta': 0.05,      # Monitoring effect parameter for custom discrete
         # Grid search parameters (smaller for faster testing)
-        'n_phi1_grid': 20,      # Number of premium grid points
+        'n_phi1_grid': 10,      # Number of premium grid points
         'n_phi2_grid': 10       # Number of indemnity grid points
     }
     

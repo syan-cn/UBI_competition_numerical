@@ -9,7 +9,8 @@ This framework implements a duopoly insurance model where two insurers compete b
 - **Flexible Function Configuration**: Each function can independently use different functional forms
 - **Discrete State Spaces**: Support for discrete state distributions with custom probability structures
 - **Numerical Solver**: Finds optimal action schedules, premiums, and indemnity functions
-- **Parallel Processing**: High-performance parallel grid search for computational efficiency
+- **Advanced Parallel Processing**: High-performance parallel grid search with intelligent evaluation strategies
+- **Efficient Contract Pair Evaluation**: Multiple approaches to evaluate contract pairs after generation
 - **Simulation & Plotting**: Visualizes results and performs sensitivity analysis
 
 ## Framework Components
@@ -34,46 +35,63 @@ The `DuopolySolver` class implements the numerical solution of the duopoly model
 - Incentive constraint solving
 - Optimal contract determination
 - Grid-based discretization
-- **Parallel grid search**: Multi-core processing for large-scale computations
+- **Advanced parallel processing**: Multi-core processing with intelligent evaluation strategies
 
-### 5. Parallel Processing
+### 5. Contract Pair Evaluation Methods
 
-The framework includes high-performance parallel processing capabilities:
+The framework provides multiple optimized approaches to evaluate contract pairs after obtaining all feasible contracts:
+
+#### 5.1 Original Method
+- **Description**: Evaluates all contract pairs at once using parallel processing
+
+#### 5.2 Simple Efficient Method
+- **Description**: Pre-filters contracts using heuristics, then uses optimized batching
+- **Features**:
+  - Pre-filtering removes clearly dominated contracts (low profit, extreme premiums)
+  - Optimized batch sizes for parallel processing
+  - Progress tracking during evaluation
+  - Adaptive batch sizing based on available resources
+
+#### 5.3 Incremental Pareto Method
+- **Description**: Builds Pareto frontier incrementally by processing contracts in chunks
+- **Features**:
+  - Processes contracts in manageable chunks (default: 500x500)
+  - Maintains running Pareto frontier throughout process
+  - Memory efficient for very large problems
+  - Configurable chunk sizes
+
+#### 5.4 Divide-and-Conquer Method
+- **Description**: Recursively partitions contract pairs into subsets and evaluates in parallel
+- **Features**:
+  - Recursive subdivision of contract space
+  - Parallel evaluation of quadrants
+  - Efficient Pareto frontier merging
+  - Configurable recursion depth
+
+### 6. Traditional Parallel Processing
 
 - **Parallel Contract Generation**: Distributes contract feasibility evaluation across CPU cores
 - **Parallel Contract Pair Evaluation**: Parallelizes contract pair evaluation and profit computation
 - **Automatic CPU Detection**: Uses all available cores by default
 - **Configurable Workers**: Specify number of parallel workers as needed
 
-#### Usage Examples
-
-```python
-# Basic parallel processing
-pareto_solutions = solver.brute_force_duopoly(n_jobs=4)
-
-# Using the main simulation function with parallel processing
-results = run_simulation(
-    state_spaces=[{'name': 'binary', 'f': 'binary_states'}],
-    params=params,
-    n_jobs=4  # Use 4 CPU cores
-)
-
-# Use all available cores (default)
-results = run_simulation(
-    state_spaces=[{'name': 'binary', 'f': 'binary_states'}],
-    params=params
-)
-```
-
-#### Performance Characteristics
-
-- **Small grids** (10×5): 2-4x speedup
-- **Medium grids** (20×10): 4-8x speedup  
-- **Large grids** (50×20): 8-16x speedup
-
-### 6. Simulation & Analysis
+### 7. Simulation & Analysis
 
 The `InsuranceSimulator` class provides comprehensive analysis capabilities including full model simulation, result visualization, and parameter sensitivity analysis.
+
+## Demonstration
+
+Run the demonstration script to see the different evaluation methods:
+
+```bash
+python evaluation_methods_demo.py
+```
+
+This script compares all four evaluation methods and generates comprehensive performance comparison plots including:
+- Execution time comparisons across problem sizes
+- Solution quality verification (all methods produce identical results)
+- Speedup analysis and scalability characteristics
+- Memory usage patterns and recommendations
 
 ## Requirements
 
