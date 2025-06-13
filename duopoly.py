@@ -396,12 +396,16 @@ class Utility:
     
     @staticmethod
     def exponential(x: float, params: Dict) -> float:
-        """Exponential: u(x) = 1 - exp(-rho * x)"""
+        """Exponential: u(x) = max * (1 - exp(-rho * x))."""
         if 'u_rho' not in params:
             raise ValueError("Parameter 'u_rho' is required for exponential utility function")
+        if 'u_max' not in params:
+            raise ValueError("Parameter 'u_max' is required for exponential utility function")
         
         rho = params['u_rho']
-        return 1 - np.exp(-rho * x)
+        max_val = params['u_max']
+        result = max_val * (1 - np.exp(-rho * x))
+        return result
     
     @staticmethod
     def power(x: float, params: Dict) -> float:
@@ -2187,6 +2191,7 @@ def run_simulation(state_spaces=None, include_sensitivity=True, save_plots=True,
                - e_kappa: Parameter for action cost function
                - e_power: Parameter for action cost function
                - u_rho: Parameter for utility function
+               - u_max: Maximum value parameter for exponential utility function (upper limit)
                - f_p_base: Parameter for state density function
                - c_lambda: Parameter for insurer cost function
                - xi_scale: Scale parameter for logit choice model
@@ -2314,6 +2319,7 @@ if __name__ == "__main__":
         'e_kappa': 80,          # Parameter for action cost function
         'e_power': 2.0,         # Parameter for action cost function
         'u_rho': 0.1,           # Parameter for utility function
+        'u_max': 2*10e3,        # Maximum value parameter for exponential utility function (upper limit)
         'f_p_base': 0.5,        # Parameter for state density function
         'c_lambda': 30,         # Parameter for insurer cost function
         'xi_scale': 500.0,      # Scale parameter for logit choice model
