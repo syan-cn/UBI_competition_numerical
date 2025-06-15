@@ -1,21 +1,27 @@
 """
-Duopoly Insurance Model Framework
+Duopoly Insurance Model Framework - KKT Solver Implementation
 
-A flexible, modular framework for solving duopoly-style insurance models
+A framework for solving duopoly-style insurance models using KKT conditions
 with different functional forms and parameters.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.optimize import minimize, root_scalar
+from scipy.optimize import minimize
 from typing import Dict, Tuple, List
 from logger import SimulationLogger
 from pathlib import Path
-import datetime
-from itertools import product
-import multiprocessing as mp
-from functools import partial
 import time
+import pyomo.environ as pyo
+
+# Pyomo imports for KKT-based solving
+try:
+    from pyomo.opt import SolverStatus, TerminationCondition
+    PYOMO_AVAILABLE = True
+except ImportError:
+    PYOMO_AVAILABLE = False
+    print("Warning: Pyomo not available. KKT-based solving will not work.")
+
 
 # ============================================================================
 # DISCRETE STATE SPACE
@@ -65,7 +71,7 @@ class StateDensity:
         """
         p_base = params.get('f_p_base', 0.5)
         
-        prob_1 = max(0.0, min(1.0, (1 - delta) * p_base + a * delta))
+        prob_1 = (1 - delta) * p_base + a * delta
         prob_0 = 1.0 - prob_1
         
         return DiscreteStateSpace([0.0, 1.0], [prob_0, prob_1])
@@ -74,57 +80,6 @@ class StateDensity:
     def df_da_binary_states(a: float, delta: float, params: Dict) -> np.ndarray:
         # dP(z=1)/da = delta, dP(z=0)/da = -delta
         return np.array([-delta, delta])
-
-    @staticmethod
-    def custom_discrete(a: float, delta: float, params: Dict) -> DiscreteStateSpace:
-        """
-        Custom discrete distribution with user-defined states and probabilities
-        """
-        if 'f_z_values' not in params:
-            raise ValueError("Parameter 'f_z_values' is required for custom_discrete state density function")
-        if 'f_base_probs' not in params:
-            raise ValueError("Parameter 'f_base_probs' is required for custom_discrete state density function")
-        if 'f_p_a' not in params:
-            raise ValueError("Parameter 'f_p_a' is required for custom_discrete state density function")
-        if 'f_p_delta' not in params:
-            raise ValueError("Parameter 'f_p_delta' is required for custom_discrete state density function")
-        
-        z_values = params['f_z_values']
-        base_probs = params['f_base_probs']
-        
-        # Adjust probabilities based on action and monitoring
-        p_a = params['f_p_a']
-        p_delta = params['f_p_delta']
-        
-        adjusted_probs = []
-        for i, base_prob in enumerate(base_probs):
-            # Higher states get higher probability with more action/monitoring
-            adjustment = (i / len(base_probs)) * (p_a * a + p_delta * delta)
-            adjusted_prob = max(0.0, base_prob + adjustment)
-            adjusted_probs.append(adjusted_prob)
-        
-        # Normalize
-        adjusted_probs = np.array(adjusted_probs)
-        adjusted_probs = adjusted_probs / np.sum(adjusted_probs)
-        
-        return DiscreteStateSpace(z_values, adjusted_probs)
-
-    @staticmethod
-    def df_da_custom_discrete(a: float, delta: float, params: Dict) -> np.ndarray:
-        z_values = params['f_z_values']
-        base_probs = np.array(params['f_base_probs'])
-        p_a = params['f_p_a']
-        p_delta = params['f_p_delta']
-        n = len(base_probs)
-        # Unnormalized derivative
-        d_adjusted = np.array([(i / n) * p_a for i in range(n)])
-        # Unnormalized adjusted_probs (same as in custom_discrete)
-        adjusted_probs = np.array([max(0.0, base_probs[i] + (i / n) * (p_a * a + p_delta * delta)) for i in range(n)])
-        sum_adj = np.sum(adjusted_probs)
-        # Normalized derivative: (d_adjusted * sum_adj - adjusted_probs * sum(d_adjusted)) / sum_adj^2
-        sum_d_adj = np.sum(d_adjusted)
-        d_norm = (d_adjusted * sum_adj - adjusted_probs * sum_d_adj) / (sum_adj ** 2)
-        return d_norm
 
 
 # ============================================================================
@@ -238,12 +193,16 @@ class NoAccidentProbability:
         
         alpha = params['p_alpha']
         beta = params['p_beta']
-        return max(0, min(1, alpha + beta * a))
+        return alpha + beta * a
     
     @staticmethod
     def dp_da_linear(a: float, params: Dict) -> float:
         beta = params['p_beta']
         return beta
+    
+    @staticmethod
+    def d2p_da2_linear(a: float, params: Dict) -> float:
+        return 0.0  # Second derivative is zero for linear
     
     @staticmethod
     def exponential(a: float, params: Dict) -> float:
@@ -255,13 +214,19 @@ class NoAccidentProbability:
         
         alpha = params['p_alpha']
         beta = params['p_beta']
-        return max(0, min(1, 1 - alpha * np.exp(-beta * a)))
+        return 1 - alpha * pyo.exp(-beta * a)
     
     @staticmethod
     def dp_da_exponential(a: float, params: Dict) -> float:
         alpha = params['p_alpha']
         beta = params['p_beta']
-        return alpha * beta * np.exp(-beta * a)
+        return alpha * beta * pyo.exp(-beta * a)
+    
+    @staticmethod
+    def d2p_da2_exponential(a: float, params: Dict) -> float:
+        alpha = params['p_alpha']
+        beta = params['p_beta']
+        return -alpha * beta**2 * pyo.exp(-beta * a)
     
     @staticmethod
     def power(a: float, params: Dict) -> float:
@@ -273,13 +238,19 @@ class NoAccidentProbability:
         
         alpha = params['p_alpha']
         beta = params['p_beta']
-        return max(0, min(1, 1 - alpha * (1 + a)**(-beta)))
+        return 1 - alpha * (1 + a)**(-beta)
     
     @staticmethod
     def dp_da_power(a: float, params: Dict) -> float:
         alpha = params['p_alpha']
         beta = params['p_beta']
         return alpha * beta * (1 + a) ** (-(beta + 1))
+    
+    @staticmethod
+    def d2p_da2_power(a: float, params: Dict) -> float:
+        alpha = params['p_alpha']
+        beta = params['p_beta']
+        return -alpha * beta * (beta + 1) * (1 + a) ** (-(beta + 2))
     
     @staticmethod
     def logistic(a: float, params: Dict) -> float:
@@ -291,15 +262,22 @@ class NoAccidentProbability:
         
         alpha = params['p_alpha']
         beta = params['p_beta']
-        return 1 / (1 + np.exp(-beta * (a - alpha)))
+        return 1 / (1 + pyo.exp(-beta * (a - alpha)))
     
     @staticmethod
     def dp_da_logistic(a: float, params: Dict) -> float:
         alpha = params['p_alpha']
         beta = params['p_beta']
-        exp_term = np.exp(-beta * (a - alpha))
+        exp_term = pyo.exp(-beta * (a - alpha))
         denom = (1 + exp_term) ** 2
         return beta * exp_term / denom
+    
+    @staticmethod
+    def d2p_da2_logistic(a: float, params: Dict) -> float:
+        alpha = params['p_alpha']
+        beta = params['p_beta']
+        exp_term = pyo.exp(-beta * (a - alpha))
+        return -beta**2 * exp_term * (exp_term - 1) / (1 + exp_term)**3
 
 
 class MonitoringCost:
@@ -321,7 +299,7 @@ class MonitoringCost:
             raise ValueError("Parameter 'm_gamma' is required for exponential monitoring cost function")
         
         gamma = params['m_gamma']
-        return gamma * np.exp(delta)
+        return gamma * pyo.exp(delta)
     
     @staticmethod
     def power(delta: float, params: Dict) -> float:
@@ -340,34 +318,6 @@ class ActionCost:
     """Different functional forms for action cost e(a, theta)."""
     
     @staticmethod
-    def linear(a: float, theta: float, params: Dict) -> float:
-        """Linear: e(a, theta) = kappa * a / theta"""
-        if 'e_kappa' not in params:
-            raise ValueError("Parameter 'e_kappa' is required for linear action cost function")
-        
-        kappa = params['e_kappa']
-        return kappa * a / max(theta, 0.1)
-    
-    @staticmethod
-    def de_da_linear(a: float, theta: float, params: Dict) -> float:
-        kappa = params['e_kappa']
-        return kappa / max(theta, 0.1)
-    
-    @staticmethod
-    def exponential(a: float, theta: float, params: Dict) -> float:
-        """Exponential: e(a, theta) = kappa * exp(a) / theta"""
-        if 'e_kappa' not in params:
-            raise ValueError("Parameter 'e_kappa' is required for exponential action cost function")
-        
-        kappa = params['e_kappa']
-        return kappa * np.exp(a) / max(theta, 0.1)
-    
-    @staticmethod
-    def de_da_exponential(a: float, theta: float, params: Dict) -> float:
-        kappa = params['e_kappa']
-        return kappa * np.exp(a) / max(theta, 0.1)
-    
-    @staticmethod
     def power(a: float, theta: float, params: Dict) -> float:
         """Power: e(a, theta) = kappa * a^power * theta"""
         if 'e_kappa' not in params:
@@ -384,15 +334,19 @@ class ActionCost:
         kappa = params['e_kappa']
         power = params['e_power']
         return kappa * power * a ** (power - 1) * theta
+    
+    @staticmethod
+    def d2e_da2_power(a: float, theta: float, params: Dict) -> float:
+        kappa = params['e_kappa']
+        power = params['e_power']
+        if power > 1:
+            return kappa * power * (power - 1) * a ** (power - 2) * theta
+        else:
+            return 0.0
 
 
 class Utility:
     """Different functional forms for utility u(x)."""
-    
-    @staticmethod
-    def linear(x: float, params: Dict) -> float:
-        """Linear: u(x) = x"""
-        return x
     
     @staticmethod
     def exponential(x: float, params: Dict) -> float:
@@ -404,8 +358,21 @@ class Utility:
         
         rho = params['u_rho']
         max_val = params['u_max']
-        result = max_val * (1 - np.exp(-rho * x))
-        return result
+        return max_val * (1 - pyo.exp(-rho * x))
+    
+    @staticmethod
+    def du_dx_exponential(x: float, params: Dict) -> float:
+        """First derivative of exponential utility: u'(x) = max * rho * exp(-rho * x)"""
+        rho = params['u_rho']
+        max_val = params['u_max']
+        return max_val * rho * pyo.exp(-rho * x)
+    
+    @staticmethod
+    def d2u_dx2_exponential(x: float, params: Dict) -> float:
+        """Second derivative of exponential utility: u''(x) = -max * rho^2 * exp(-rho * x)"""
+        rho = params['u_rho']
+        max_val = params['u_max']
+        return -max_val * rho**2 * pyo.exp(-rho * x)
     
     @staticmethod
     def power(x: float, params: Dict) -> float:
@@ -414,12 +381,43 @@ class Utility:
             raise ValueError("Parameter 'u_rho' is required for power utility function")
         
         rho = params['u_rho']
-        return x**rho if x > 0 else 0
+        if x <= 0:
+            raise ValueError("x must be positive for power utility function")
+        return x**rho
+    
+    @staticmethod
+    def du_dx_power(x: float, params: Dict) -> float:
+        """First derivative of power utility: u'(x) = rho * x^(rho-1)"""
+        rho = params['u_rho']
+        if x <= 0:
+            raise ValueError("x must be positive for power utility function")
+        return rho * x**(rho - 1)
+    
+    @staticmethod
+    def d2u_dx2_power(x: float, params: Dict) -> float:
+        """Second derivative of power utility: u''(x) = rho * (rho-1) * x^(rho-2)"""
+        rho = params['u_rho']
+        if x <= 0:
+            raise ValueError("x must be positive for power utility function")
+        if rho > 1:
+            return rho * (rho - 1) * x**(rho - 2)
+        else:
+            return 0.0
     
     @staticmethod
     def logarithmic(x: float, params: Dict) -> float:
         """Logarithmic: u(x) = log(1 + x)"""
         return np.log(1 + x) if x > -1 else -np.inf
+    
+    @staticmethod
+    def du_dx_logarithmic(x: float, params: Dict) -> float:
+        """First derivative of logarithmic utility: u'(x) = 1/(1 + x)"""
+        return 1 / (1 + x) if x > -1 else 0
+    
+    @staticmethod
+    def d2u_dx2_logarithmic(x: float, params: Dict) -> float:
+        """Second derivative of logarithmic utility: u''(x) = -1/(1 + x)^2"""
+        return -1 / (1 + x)**2 if x > -1 else 0
 
 
 class InsurerCost:
@@ -441,7 +439,7 @@ class InsurerCost:
             raise ValueError("Parameter 'c_lambda' is required for exponential insurer cost function")
         
         lambda_val = params['c_lambda']
-        return lambda_val * np.exp(delta)
+        return lambda_val * pyo.exp(delta)
     
     @staticmethod
     def power(delta: float, params: Dict) -> float:
@@ -461,29 +459,11 @@ class InsurerCost:
 # ============================================================================
 
 class FlexibleFunctions(FunctionTemplates):
-    """
-    Flexible function configurator that allows mixing different functional forms
-    for each function independently.
-    """
+    """Flexible function configurator that allows mixing different functional forms for each function independently."""
     
     def __init__(self, function_config: Dict):
-        """
-        Initialize with function configuration.
-        
-        Args:
-            function_config: Dictionary specifying which functional form to use for each function
-                           Example: {
-                               'p': 'linear',
-                               'm': 'linear', 
-                               'e': 'power',
-                               'u': 'logarithmic',
-                               'f': 'binary_states',
-                               'c': 'linear'
-                           }
-        """
         self.config = function_config
         
-        # Function mappings
         self.p_functions = {
             'linear': NoAccidentProbability.linear,
             'exponential': NoAccidentProbability.exponential,
@@ -498,21 +478,17 @@ class FlexibleFunctions(FunctionTemplates):
         }
         
         self.e_functions = {
-            'linear': ActionCost.linear,
-            'exponential': ActionCost.exponential,
             'power': ActionCost.power
         }
         
         self.u_functions = {
-            'linear': Utility.linear,
             'exponential': Utility.exponential,
             'power': Utility.power,
             'logarithmic': Utility.logarithmic
         }
         
         self.f_functions = {
-            'binary_states': StateDensity.binary_states,
-            'custom_discrete': StateDensity.custom_discrete,
+            'binary_states': StateDensity.binary_states
         }
         
         self.c_functions = {
@@ -535,10 +511,16 @@ class FlexibleFunctions(FunctionTemplates):
         Returns:
             Tuple of (P0, P1, P2) - choice probabilities for each option
         """
-        V0, V1, V2 = np.array(V0)/mu, np.array(V1)/mu, np.array(V2)/mu
-        expV = np.exp(np.vstack([V0, V1, V2]))
+        V0, V1, V2 = np.array(V0), np.array(V1), np.array(V2)
+        
+        # Scale utilities by mu directly
+        V0_scaled = V0 / mu
+        V1_scaled = V1 / mu
+        V2_scaled = V2 / mu
+        
+        expV = np.exp(np.vstack([V0_scaled, V1_scaled, V2_scaled]))
         denom = expV.sum(axis=0)
-        return expV / denom  # rows: 0,1,2
+        return expV / denom
     
     def p(self, a: float, params: Dict) -> float:
         """No accident probability function."""
@@ -587,40 +569,54 @@ class FlexibleFunctions(FunctionTemplates):
             raise ValueError("Function type 'p' not specified in configuration")
         func_type = self.config['p']
         return getattr(NoAccidentProbability, f"dp_da_{func_type}")(a, params)
+    
+    def d2p_da2(self, a: float, params: Dict) -> float:
+        if 'p' not in self.config:
+            raise ValueError("Function type 'p' not specified in configuration")
+        func_type = self.config['p']
+        return getattr(NoAccidentProbability, f"d2p_da2_{func_type}")(a, params)
 
     def de_da(self, a: float, theta: float, params: Dict) -> float:
         if 'e' not in self.config:
             raise ValueError("Function type 'e' not specified in configuration")
         func_type = self.config['e']
         return getattr(ActionCost, f"de_da_{func_type}")(a, theta, params)
+    
+    def d2e_da2(self, a: float, theta: float, params: Dict) -> float:
+        if 'e' not in self.config:
+            raise ValueError("Function type 'e' not specified in configuration")
+        func_type = self.config['e']
+        return getattr(ActionCost, f"d2e_da2_{func_type}")(a, theta, params)
 
     def df_da(self, a: float, delta: float, params: Dict) -> np.ndarray:
         if 'f' not in self.config:
             raise ValueError("Function type 'f' not specified in configuration")
         func_type = self.config['f']
         return getattr(StateDensity, f"df_da_{func_type}")(a, delta, params)
+    
+    def du_dx(self, x: float, params: Dict) -> float:
+        if 'u' not in self.config:
+            raise ValueError("Function type 'u' not specified in configuration")
+        func_type = self.config['u']
+        return getattr(Utility, f"du_dx_{func_type}")(x, params)
+    
+    def d2u_dx2(self, x: float, params: Dict) -> float:
+        if 'u' not in self.config:
+            raise ValueError("Function type 'u' not specified in configuration")
+        func_type = self.config['u']
+        return getattr(Utility, f"d2u_dx2_{func_type}")(x, params)
 
 
 # ============================================================================
-# NUMERICAL SOLVER
+# DUOPOLY SOLVER
 # ============================================================================
 
 class DuopolySolver:
     """
-    Numerical solver for the duopoly insurance model with discrete state spaces.
-    
-    Action bounds are configurable via a_min and a_max parameters (default: [0, 1]).
-    This allows the model to be adapted to different action space specifications.
+    Numerical solver for the duopoly insurance model using KKT conditions.
     """
     
     def __init__(self, functions: FlexibleFunctions, params: Dict):
-        """
-        Initialize the solver.
-        
-        Args:
-            functions: FlexibleFunctions instance
-            params: Dictionary containing all model parameters
-        """
         self.functions = functions
         self.params = params
         
@@ -642,13 +638,13 @@ class DuopolySolver:
         if 'n_theta' not in params:
             raise ValueError("Parameter 'n_theta' (number of risk types) is required")
         
-        self.W = params['W']  # Initial wealth
-        self.s = params['s']   # Accident severity
-        self.N = params['N']   # Number of customers
-        self.delta1 = params['delta1']  # Insurer 1's monitoring level
-        self.delta2 = params['delta2']  # Insurer 2's monitoring level
+        self.W = params['W']
+        self.s = params['s']
+        self.N = params['N']
+        self.delta1 = params['delta1']
+        self.delta2 = params['delta2']
+        self.mu = params['mu']
         
-        # Risk type grid parameters
         self.theta_min = params['theta_min']
         self.theta_max = params['theta_max']
         self.n_theta = params['n_theta']
@@ -667,24 +663,20 @@ class DuopolySolver:
         self.state_space = self.functions.f(1.0, 1.0, self.params)
         self.z_values, self.z_probs = self.state_space.get_all_states()
         self.n_states = len(self.z_values)
-        
+    
     def compute_reservation_utility(self, theta: float) -> float:
         """Compute reservation utility V_0(theta)."""
         def objective(a):
-            p_no_accident = self.functions.p(a, self.params)  # Probability of no accident
-            p_accident = 1 - p_no_accident  # Probability of accident
+            p_no_accident = self.functions.p(a, self.params)
+            p_accident = 1 - p_no_accident
             e_val = self.functions.e(a, theta, self.params)
             
-            # Expected utility without insurance
-            # When no accident occurs (prob p(a)): utility is u(W)
-            # When accident occurs (prob 1-p(a)): utility is u(W - s)
             utility_no_accident = self.functions.u(self.W, self.params)
             utility_accident = self.functions.u(self.W - self.s, self.params)
             
             expected_utility = p_no_accident * utility_no_accident + p_accident * utility_accident - e_val
             return -expected_utility
         
-        # Use configurable action bounds
         result = minimize(objective, x0=(self.a_min + self.a_max)/2, bounds=[(self.a_min, self.a_max)])
         return -result.fun
     
@@ -702,8 +694,7 @@ class DuopolySolver:
         p_no_accident = self.functions.p(a, self.params)  # Probability of no accident
         p_accident = 1 - p_no_accident  # Probability of accident
         e_val = self.functions.e(a, theta, self.params)
-        m_val = self.functions.m(delta, self.params)
-        
+
         # Get discrete state space for this action and monitoring level
         state_space = self.functions.f(a, delta, self.params)
         z_values, z_probs = state_space.get_all_states()
@@ -711,1664 +702,1170 @@ class DuopolySolver:
         # Expected utility when accident occurs (sum over discrete states)
         expected_utility_accident = 0.0
         for i, z in enumerate(z_values):
-            phi2_val = phi2_values[i]  # Direct indemnity value for this state
+            phi2_val = phi2_values[i]
             u_val = self.functions.u(self.W - phi1 + phi2_val - self.s, self.params)
             expected_utility_accident += u_val * z_probs[i]
         
         # Expected utility when no accident occurs
         utility_no_accident = self.functions.u(self.W - phi1, self.params)
+        m_val = self.functions.m(delta, self.params)
         
-        return p_accident * expected_utility_accident + \
-               p_no_accident * utility_no_accident - m_val - e_val
+        return p_no_accident * utility_no_accident + p_accident * expected_utility_accident - e_val - m_val
     
-    def incentive_constraint(self, a: float, phi1: float, phi2_values: np.ndarray, delta: float, theta: float) -> float:
+
+    
+    # ============================================================================
+    # COMPLETE MATHEMATICAL MODEL IMPLEMENTATION
+    # ============================================================================
+    
+    def compute_utility_Vi(self, theta: float, a: float, phi1: float, phi2_values: np.ndarray, delta: float) -> float:
+        """
+        Compute utility V_i(θ) for a given consumer type θ and contract (a, φ1, φ2).
+        
+        Mathematical formulation:
+        V_k(θ) = p(a^k(θ)) u(W-φ₁^k) + [1-p(a^k(θ))] ∫ u(W-φ₁^k+φ₂^k(z)-s) f(z|a^k(θ),δ^k) dz - e(a^k(θ),θ) - m(δ^k)
+        """
+        p_no_accident = self.functions.p(a, self.params)
+        p_accident = 1 - p_no_accident
+        e_val = self.functions.e(a, theta, self.params)
+        m_val = self.functions.m(delta, self.params)
+        
+        # Get state space
+        state_space = self.functions.f(a, delta, self.params)
+        z_values, z_probs = state_space.get_all_states()
+        
+        # Utility when no accident occurs
+        utility_no_accident = self.functions.u(self.W - phi1, self.params)
+        
+        # Expected utility when accident occurs
+        expected_utility_accident = 0.0
+        for i, z in enumerate(z_values):
+            phi2_val = phi2_values[i]
+            u_accident = self.functions.u(self.W - phi1 + phi2_val - self.s, self.params)
+            expected_utility_accident += u_accident * z_probs[i]
+        
+        return p_no_accident * utility_no_accident + p_accident * expected_utility_accident - e_val - m_val
+    
+    def compute_choice_probabilities(self, theta: float, 
+                                   a1: float, phi1_1: float, phi2_1: np.ndarray,
+                                   a2: float, phi1_2: float, phi2_2: np.ndarray) -> Tuple[float, float, float]:
+        """Compute choice probabilities P_0(θ), P_1(θ), P_2(θ) using multinomial logit."""
+        V0 = self.compute_reservation_utility(theta)
+        V1 = self.compute_utility_Vi(theta, a1, phi1_1, phi2_1, self.delta1)
+        V2 = self.compute_utility_Vi(theta, a2, phi1_2, phi2_2, self.delta2)
+        
+        utilities = [V0, V1, V2]
+        
+        # Use a more stable approach: scale utilities by mu directly
+        scaled_utilities = [u / self.mu for u in utilities]
+        
+        # Compute choice probabilities using Pyomo exp for Pyomo expressions
+        exp_utilities = [pyo.exp(u) for u in scaled_utilities]
+        denom = sum(exp_utilities)
+        
+        P0 = exp_utilities[0] / denom
+        P1 = exp_utilities[1] / denom
+        P2 = exp_utilities[2] / denom
+        
+        return P0, P1, P2
+    
+    def compute_dPi_da(self, theta: float, i: int,
+                       a1: float, phi1_1: float, phi2_1: np.ndarray,
+                       a2: float, phi1_2: float, phi2_2: np.ndarray) -> float:
+        """
+        Compute derivative of choice probability P_i with respect to action a_i.
+        
+        Mathematical formulation:
+        ∂P_i/∂a_i = (1/μ) P_i (1-P_i) ∂V_i/∂a_i
+        """
+        P0, P1, P2 = self.compute_choice_probabilities(theta, a1, phi1_1, phi2_1, a2, phi1_2, phi2_2)
+        
+        # Compute derivative of V_i with respect to a_i (this is essentially G(θ))
+        if i == 1:
+            dVi_da = self.compute_G_function(theta, a1, phi1_1, phi2_1, self.delta1)
+            Pi = P1
+        else:
+            dVi_da = self.compute_G_function(theta, a2, phi1_2, phi2_2, self.delta2)
+            Pi = P2
+        
+        # Multinomial logit derivative: ∂P_i/∂a_i = (1/μ) P_i (1-P_i) ∂V_i/∂a_i
+        return (1 / self.mu) * Pi * (1 - Pi) * dVi_da
+    
+    def compute_dVi_da(self, theta: float, a: float, phi1: float, phi2_values: np.ndarray, delta: float) -> float:
+        """Compute derivative of V_i with respect to action a."""
         p_no_accident = self.functions.p(a, self.params)
         p_accident = 1 - p_no_accident
         dp_da = self.functions.dp_da(a, self.params)
         de_da = self.functions.de_da(a, theta, self.params)
-        z_values, z_probs = self.functions.f(a, delta, self.params).get_all_states()
+        
+        # Get state space and derivatives
+        state_space = self.functions.f(a, delta, self.params)
+        z_values, z_probs = state_space.get_all_states()
         df_da = self.functions.df_da(a, delta, self.params)
-        # Compute integrals for accident case
+        
+        # Compute integrals
+        utility_no_accident = self.functions.u(self.W - phi1, self.params)
+        
         integral1 = 0.0
         integral2 = 0.0
+        
         for i, z in enumerate(z_values):
             phi2_val = phi2_values[i]
-            u_val = self.functions.u(self.W - phi1 + phi2_val - self.s, self.params)
-            f_val = z_probs[i]
-            integral1 += u_val * f_val
-            integral2 += u_val * df_da[i]
-        utility_no_accident = self.functions.u(self.W - phi1, self.params)
+            u_accident = self.functions.u(self.W - phi1 + phi2_val - self.s, self.params)
+            integral1 += u_accident * z_probs[i]
+            integral2 += u_accident * df_da[i]
+        
         return dp_da * (utility_no_accident - integral1) + p_accident * integral2 - de_da
     
-    def solve_contract(self, insurer_id: int, competitor_contract: Dict = None) -> Tuple[np.ndarray, float, np.ndarray]:
+    def compute_dVi_dphi1(self, theta: float, a: float, phi1: float, phi2_values: np.ndarray, delta: float) -> float:
         """
-        Solve for optimal contract maximizing expected profit with choice probabilities.
+        Compute derivative of V_i with respect to premium φ₁.
         
-        Args:
-            insurer_id: 1 or 2 for the insurer
-            competitor_contract: Dictionary with competitor's contract details
-            
-        Returns:
-            Tuple of (action schedule, premium, indemnity values array)
+        Mathematical formulation:
+        ∂V_i/∂φ₁ = -p(a) u'(W-φ₁) - [1-p(a)] ∫ u'(W-φ₁+φ₂(z)-s) f(z|a,δ) dz
         """
-        if insurer_id not in [1, 2]:
-            raise ValueError("insurer_id must be 1 or 2")
-            
-        if insurer_id == 1:
-            delta = self.delta1
-        else:
-            delta = self.delta2
+        p_no_accident = self.functions.p(a, self.params)
+        p_accident = 1 - p_no_accident
         
-        def objective(x):
-            # x contains: [premium, indemnity_values..., actions...]
-            phi1 = x[0]
-            phi2_values = x[1:1+self.n_states]
-            a_schedule = x[1+self.n_states:1+self.n_states+self.n_theta]
-            
-            # Compute expected profit with choice probabilities
-            total_profit = 0.0
-            
-            for i, theta in enumerate(self.theta_grid):
-                # Compute utilities for this theta
-                V_own = self.compute_expected_utility(a_schedule[i], phi1, phi2_values, delta, theta)
-                V0 = self.compute_reservation_utility(theta)
-                
-                # Competitor utility (if available)
-                if competitor_contract:
-                    V_comp = competitor_contract.get('utilities', [V0] * self.n_theta)[i]
-                else:
-                    V_comp = V0  # Default to reservation utility
-                
-                # Use logit choice probabilities for proper probabilistic choice modeling
-                # This allows for smooth optimization and realistic market shares
-                mu = self.params.get('xi_scale')
-                if mu is None:
-                    raise ValueError("Parameter 'xi_scale' is required for choice probability computation")
-                    
-                V0_scaled, V_own_scaled, V_comp_scaled = V0/mu, V_own/mu, V_comp/mu
-                expV = np.exp([V0_scaled, V_own_scaled, V_comp_scaled])
-                denom = expV.sum()
-                prob_choose_own = expV[1] / denom  # Probability of choosing own insurer
-                
-                # Expected indemnity payment
-                p_action = self.functions.p(a_schedule[i], self.params)
-                state_space = self.functions.f(a_schedule[i], delta, self.params)
-                _, z_probs = state_space.get_all_states()
-                expected_indemnity = np.sum(phi2_values * z_probs) * (1 - p_action)
-                
-                # Profit per customer of this type
-                profit_per_customer = phi1 - expected_indemnity - self.functions.c(delta, self.params)
-                
-                # Weight by choice probability and type distribution
-                total_profit += prob_choose_own * profit_per_customer * self.h_theta[i]
-            
-            return -total_profit * self.N  # Negative for minimization
+        # Get state space
+        state_space = self.functions.f(a, delta, self.params)
+        z_values, z_probs = state_space.get_all_states()
         
-        def constraints(x):
-            phi1 = x[0]
-            phi2_values = x[1:1+self.n_states]
-            a_schedule = x[1+self.n_states:1+self.n_states+self.n_theta]
-            
-            # Incentive constraints for each theta
-            violations = []
-            for i, theta in enumerate(self.theta_grid):
-                violation = self.incentive_constraint(a_schedule[i], phi1, phi2_values, delta, theta)
-                violations.append(violation)
-            
-            return violations
+        # Marginal utility when no accident occurs: -u'(W-φ₁)
+        du_dphi1_no_accident = -self.functions.du_dx(self.W - phi1, self.params)
         
-        # Initial guess: [premium, indemnity_values..., actions...]
-        # Use reasonable initial values based on model parameters
-        initial_premium = self.s * 0.5  # Start with half the accident severity
-        initial_indemnity = self.s * 0.3  # Start with 30% of accident severity
-        initial_action = (self.a_min + self.a_max) / 2  # Start with middle of action range
+        # Expected marginal utility when accident occurs: -∫ u'(W-φ₁+φ₂(z)-s) f(z|a,δ) dz
+        integral_du_dphi1_accident = 0.0
+        for i, z in enumerate(z_values):
+            phi2_val = phi2_values[i]
+            du_dphi1_accident = -self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)
+            integral_du_dphi1_accident += du_dphi1_accident * z_probs[i]
         
-        x0 = np.concatenate([[initial_premium], np.ones(self.n_states) * initial_indemnity, np.ones(self.n_theta) * initial_action])
-        
-        # Bounds: [premium, indemnity_values..., actions...]
-        bounds = [(0.1, self.s)] + [(0.0, self.s)] * self.n_states + [(self.a_min, self.a_max)] * self.n_theta
-        
-        # Solve optimization problem
-        result = minimize(
-            objective,
-            x0=x0,
-            constraints={'type': 'eq', 'fun': constraints},
-            bounds=bounds,
-            method='SLSQP'
-        )
-        
-        if result.success:
-            phi1 = result.x[0]
-            phi2_values = result.x[1:1+self.n_states]
-            a_schedule = result.x[1+self.n_states:1+self.n_states+self.n_theta]
-            return a_schedule, phi1, phi2_values
-        else:
-            # Fallback to reasonable values if optimization fails
-            a_schedule = np.ones(self.n_theta) * initial_action
-            phi1 = initial_premium
-            phi2_values = np.ones(self.n_states) * initial_indemnity
-            return a_schedule, phi1, phi2_values
+        return p_no_accident * du_dphi1_no_accident + p_accident * integral_du_dphi1_accident
     
-    def compute_reservation_utility_grid(self) -> np.ndarray:
-        """Compute reservation utilities for all theta types."""
-        V0 = np.zeros(self.n_theta)
-        for i, theta in enumerate(self.theta_grid):
-            V0[i] = self.compute_reservation_utility(theta)
-        return V0
+    def compute_dVi_dphi2(self, theta: float, a: float, phi1: float, phi2_values: np.ndarray, delta: float, z_idx: int) -> float:
+        """
+        Compute derivative of V_i with respect to indemnity φ₂(z).
+        
+        Mathematical formulation:
+        ∂V_i/∂φ₂(z) = [1-p(a)] u'(W-φ₁+φ₂(z)-s) f(z|a,δ)
+        """
+        p_accident = 1 - self.functions.p(a, self.params)
+        
+        # Get state space
+        state_space = self.functions.f(a, delta, self.params)
+        z_values, z_probs = state_space.get_all_states()
+        
+        # Get φ₂(z) for the specific state
+        phi2_val = phi2_values[z_idx]
+        
+        # Marginal utility at accident state: u'(W-φ₁+φ₂(z)-s)
+        du_dphi2 = self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)
+        
+        # State probability
+        f_z = z_probs[z_idx]
+        
+        return p_accident * du_dphi2 * f_z
     
-    def compute_utility_grid(self, insurer_id: int, a_schedule: np.ndarray, 
-                           phi1: float, phi2_values: np.ndarray) -> np.ndarray:
+    def compute_dPi_dphi1(self, theta: float, i: int,
+                          a1: float, phi1_1: float, phi2_1: np.ndarray,
+                          a2: float, phi1_2: float, phi2_2: np.ndarray) -> float:
         """
-        Compute utilities for all theta types for a given insurer.
+        Compute derivative of choice probability P_i with respect to premium φ₁^i.
         
-        Args:
-            insurer_id: 1 or 2 for the insurer
-            a_schedule: Action schedule (required)
-            phi1: Premium (required)
-            phi2_values: Indemnity values (required)
+        Mathematical formulation:
+        ∂P_i/∂φ₁^i = (1/μ) P_i (1-P_i) ∂V_i/∂φ₁^i
         """
-        if insurer_id not in [1, 2]:
-            raise ValueError("insurer_id must be 1 or 2")
-            
-        if a_schedule is None:
-            raise ValueError("a_schedule is required")
-        if phi1 is None:
-            raise ValueError("phi1 is required")
-        if phi2_values is None:
-            raise ValueError("phi2_values is required")
+        P0, P1, P2 = self.compute_choice_probabilities(theta, a1, phi1_1, phi2_1, a2, phi1_2, phi2_2)
         
-        if insurer_id == 1:
-            delta = self.delta1
+        # Compute derivative of V_i with respect to φ₁^i
+        if i == 1:
+            dVi_dphi1 = self.compute_dVi_dphi1(theta, a1, phi1_1, phi2_1, self.delta1)
+            Pi = P1
         else:
-            delta = self.delta2
+            dVi_dphi1 = self.compute_dVi_dphi1(theta, a2, phi1_2, phi2_2, self.delta2)
+            Pi = P2
         
-        V = np.zeros(self.n_theta)
-        for i, theta in enumerate(self.theta_grid):
-            V[i] = self.compute_expected_utility(a_schedule[i], phi1, phi2_values, delta, theta)
-        return V
+        # Multinomial logit derivative: ∂P_i/∂φ₁^i = (1/μ) P_i (1-P_i) ∂V_i/∂φ₁^i
+        return (1 / self.mu) * Pi * (1 - Pi) * dVi_dphi1
     
-    def compute_expected_profit(self, insurer_id: int, a_schedule: np.ndarray, 
-                              phi1: float, phi2_values: np.ndarray, choice_probs: np.ndarray) -> float:
+    def compute_dPi_dphi2(self, theta: float, i: int, z_idx: int,
+                          a1: float, phi1_1: float, phi2_1: np.ndarray,
+                          a2: float, phi1_2: float, phi2_2: np.ndarray) -> float:
         """
-        Compute expected profit for an insurer considering choice probabilities.
+        Compute derivative of choice probability P_i with respect to indemnity φ₂^i(z).
         
-        Args:
-            insurer_id: 1 or 2 for the insurer
-            a_schedule: Action schedule
-            phi1: Premium
-            phi2_values: Indemnity values
-            choice_probs: Choice probabilities for this insurer
-            
-        Returns:
-            Expected profit
+        Mathematical formulation:
+        ∂P_i/∂φ₂^i(z) = (1/μ) P_i (1-P_i) ∂V_i/∂φ₂^i(z)
         """
-        if insurer_id == 1:
-            delta = self.delta1
+        # Get current choice probabilities
+        P0, P1, P2 = self.compute_choice_probabilities(theta, a1, phi1_1, phi2_1, a2, phi1_2, phi2_2)
+        
+        # Compute derivative of V_i with respect to φ₂^i(z)
+        if i == 1:
+            dVi_dphi2 = self.compute_dVi_dphi2(theta, a1, phi1_1, phi2_1, self.delta1, z_idx)
+            Pi = P1
         else:
-            delta = self.delta2
+            dVi_dphi2 = self.compute_dVi_dphi2(theta, a2, phi1_2, phi2_2, self.delta2, z_idx)
+            Pi = P2
         
-        expected_profit = 0.0
-        
-        for i, theta in enumerate(self.theta_grid):
-            prob_choice = choice_probs[i]
-            
-            # Expected indemnity payment
-            p_action = self.functions.p(a_schedule[i], self.params)  # Probability of no accident
-            state_space = self.functions.f(a_schedule[i], delta, self.params)
-            _, z_probs = state_space.get_all_states()
-            expected_indemnity = np.sum(phi2_values * z_probs) * (1 - p_action)
-            
-            # Profit per customer: premium - expected indemnity (no monitoring cost per customer)
-            profit_per_customer = phi1 - expected_indemnity - self.functions.c(delta, self.params)
-            
-            # Weight by choice probability and type distribution
-            expected_profit += prob_choice * profit_per_customer * self.h_theta[i]
-        
-        return expected_profit * self.N  # Total expected profit
+        # Multinomial logit derivative: ∂P_i/∂φ₂^i(z) = (1/μ) P_i (1-P_i) ∂V_i/∂φ₂^i(z)
+        return (1 / self.mu) * Pi * (1 - Pi) * dVi_dphi2
     
-    def grid_search_contracts(self, insurer_id: int, phi1_grid, phi2_grid, logger=None):
+    def compute_G_function(self, theta: float, a: float, phi1: float, phi2_values: np.ndarray, delta: float) -> float:
         """
-        Brute-force grid search for all feasible contracts for one insurer.
-        Returns a list of dicts: {'phi1': ..., 'phi2': ..., 'a_schedule': ..., 'utilities': ..., ...}
+        Compute the G(θ) function from the mathematical model.
+        
+        Mathematical formulation:
+        G(θ) = ∂p(a)/∂a [u(W-φ₁) - ∫ u(W-φ₁+φ₂(z)-s) f(z|a,δ) dz] 
+               + (1-p(a)) ∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz 
+               - ∂e(a,θ)/∂a
         """
-        if insurer_id == 1:
-            delta = self.delta1
-        else:
-            delta = self.delta2
-        contracts = []
-        for phi1 in phi1_grid:
-            for phi2_tuple in phi2_grid:
-                phi2_values = np.array(phi2_tuple)
-                a_schedule = []
-                feasible = True
-                for theta in self.theta_grid:
-                    # Solve incentive constraint = 0 for a in action bounds
-                    def ic_func(a):
-                        return self.incentive_constraint(a, phi1, phi2_values, delta, theta)
-                    try:
-                        sol = root_scalar(ic_func, bracket=(self.a_min, self.a_max), method='brentq')
-                        if not sol.converged:
-                            # Log convergence failure details
-                            print(f"Root finding failed to converge for theta={theta}, "
-                                  f"phi1={phi1}, phi2={phi2_tuple}. "
-                                  f"Final function value: {sol.function_calls[-1].fval}")
-                            feasible = False
-                            break
-                        a_schedule.append(sol.root)
-                    except Exception as e:
-                        # Evaluate function at boundaries to understand failure
+        # Get derivative values
+        dp_da = self.functions.dp_da(a, self.params)
+        de_da = self.functions.de_da(a, theta, self.params)
+        p_no_accident = self.functions.p(a, self.params)
+        p_accident = 1 - p_no_accident
+        
+        # Get state space and derivatives
+        state_space = self.functions.f(a, delta, self.params)
+        z_values, z_probs = state_space.get_all_states()
+        df_da = self.functions.df_da(a, delta, self.params)
+        
+        # Utility when no accident occurs: u(W-φ₁)
+        utility_no_accident = self.functions.u(self.W - phi1, self.params)
+        
+        # First integral: ∫ u(W-φ₁+φ₂(z)-s) f(z|a,δ) dz
+        integral_1 = 0.0
+        for i, z in enumerate(z_values):
+            phi2_val = phi2_values[i]
+            u_accident = self.functions.u(self.W - phi1 + phi2_val - self.s, self.params)
+            integral_1 += u_accident * z_probs[i]
+        
+        # Second integral: ∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz
+        integral_2 = 0.0
+        for i, z in enumerate(z_values):
+            phi2_val = phi2_values[i]
+            u_accident = self.functions.u(self.W - phi1 + phi2_val - self.s, self.params)
+            integral_2 += u_accident * df_da[i]
+        
+        # Complete G function:
+        # G(θ) = ∂p/∂a [u(W-φ₁) - integral_1] + (1-p) * integral_2 - ∂e/∂a
+        g_value = dp_da * (utility_no_accident - integral_1) + p_accident * integral_2 - de_da
+        
+        return g_value
+    
+    def compute_dG_dphi1(self, theta: float, a: float, phi1: float, phi2_values: np.ndarray, delta: float) -> float:
+        """
+        Compute derivative of G(θ) with respect to φ₁.
+        
+        Mathematical formulation:
+        ∂G/∂φ₁ = ∂p/∂a [-u'(W-φ₁) + ∫ u'(W-φ₁+φ₂(z)-s) f(z|a,δ) dz] 
+                  + (1-p) ∫ u'(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz
+        """
+        dp_da = self.functions.dp_da(a, self.params)
+        p_accident = 1 - self.functions.p(a, self.params)
+        
+        # Get state space and derivatives
+        state_space = self.functions.f(a, delta, self.params)
+        z_values, z_probs = state_space.get_all_states()
+        df_da = self.functions.df_da(a, delta, self.params)
+        
+        # Marginal utility derivatives
+        du_dphi1_no_accident = -self.functions.du_dx(self.W - phi1, self.params)  # -u'(W-φ₁)
+        
+        # First integral: ∫ u'(W-φ₁+φ₂(z)-s) f(z|a,δ) dz
+        integral_marginal_1 = 0.0
+        for i, z in enumerate(z_values):
+            phi2_val = phi2_values[i]
+            du_dphi1_accident = -self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)  # -u'(W-φ₁+φ₂-s)
+            integral_marginal_1 += du_dphi1_accident * z_probs[i]
+        
+        # Second integral: ∫ u'(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz
+        integral_marginal_2 = 0.0
+        for i, z in enumerate(z_values):
+            phi2_val = phi2_values[i]
+            du_dphi1_accident = -self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)  # -u'(W-φ₁+φ₂-s)
+            integral_marginal_2 += du_dphi1_accident * df_da[i]
+        
+        # Complete derivative:
+        # ∂G/∂φ₁ = ∂p/∂a [-u'(W-φ₁) - integral_marginal_1] + (1-p) * integral_marginal_2
+        dG_dphi1 = dp_da * (du_dphi1_no_accident - integral_marginal_1) + p_accident * integral_marginal_2
+        
+        return dG_dphi1
+    
+    def compute_dG_dphi2(self, theta: float, a: float, phi1: float, phi2_values: np.ndarray, delta: float, z_idx: int) -> float:
+        """
+        Compute derivative of G(θ) with respect to φ₂(z).
+        
+        Mathematical formulation:
+        ∂G/∂φ₂(z) = ∂p/∂a [-u'(W-φ₁+φ₂(z)-s) f(z|a,δ)] 
+                     + (1-p) u'(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a
+        """
+        dp_da = self.functions.dp_da(a, self.params)
+        p_accident = 1 - self.functions.p(a, self.params)
+        
+        # Get state space and derivatives
+        state_space = self.functions.f(a, delta, self.params)
+        z_values, z_probs = state_space.get_all_states()
+        df_da = self.functions.df_da(a, delta, self.params)
+        
+        # Compute derivative for specific state z_idx
+        phi2_val = phi2_values[z_idx]
+        
+        # Marginal utility at accident state: u'(W-φ₁+φ₂(z)-s)
+        du_dphi2 = self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)
+        
+        # State probability and its derivative
+        f_z = z_probs[z_idx]
+        df_da_z = df_da[z_idx]
+        
+        # Complete derivative:
+        # ∂G/∂φ₂(z) = ∂p/∂a [-u'(W-φ₁+φ₂(z)-s) f(z|a,δ)] + (1-p) u'(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a
+        dG_dphi2 = dp_da * (-du_dphi2 * f_z) + p_accident * du_dphi2 * df_da_z
+        
+        return dG_dphi2
+    
+    def compute_dG_da(self, theta: float, a: float, phi1: float, phi2_values: np.ndarray, delta: float) -> float:
+        """
+        Compute derivative of G(θ) with respect to action a (second-order derivative).
+        
+        This is the most complex derivative needed for the KKT stationarity conditions.
+        
+        Mathematical formulation (expanded from G function):
+        ∂G/∂a = ∂²p/∂a² [u(W-φ₁) - ∫ u(W-φ₁+φ₂(z)-s) f(z|a,δ) dz]
+                + ∂p/∂a [- ∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
+                - ∂p/∂a [∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
+                + (1-p) ∫ u(W-φ₁+φ₂(z)-s) ∂²f(z|a,δ)/∂a² dz
+                - ∂²e/∂a²
+        """
+        # Get all necessary derivatives
+        dp_da = self.functions.dp_da(a, self.params)
+        d2p_da2 = self.functions.d2p_da2(a, self.params)
+        de_da = self.functions.de_da(a, theta, self.params)
+        d2e_da2 = self.functions.d2e_da2(a, theta, self.params)
+        
+        p_no_accident = self.functions.p(a, self.params)
+        p_accident = 1 - p_no_accident
+        
+        # Get state space and derivatives
+        state_space = self.functions.f(a, delta, self.params)
+        z_values, z_probs = state_space.get_all_states()
+        df_da = self.functions.df_da(a, delta, self.params)
+        
+        # Note: For discrete states, ∂²f/∂a² would require additional implementation
+        # For discrete binary states, second derivatives are mathematically zero
+        d2f_da2 = np.zeros_like(df_da)  # Exact for discrete linear state transitions
+        
+        # Utility when no accident occurs
+        utility_no_accident = self.functions.u(self.W - phi1, self.params)
+        
+        # Integral terms
+        integral_u_f = 0.0          # ∫ u(W-φ₁+φ₂(z)-s) f(z|a,δ) dz
+        integral_u_df_da = 0.0      # ∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz
+        integral_u_d2f_da2 = 0.0    # ∫ u(W-φ₁+φ₂(z)-s) ∂²f(z|a,δ)/∂a² dz
+        
+        for i, z in enumerate(z_values):
+            phi2_val = phi2_values[i]
+            u_accident = self.functions.u(self.W - phi1 + phi2_val - self.s, self.params)
+            
+            integral_u_f += u_accident * z_probs[i]
+            integral_u_df_da += u_accident * df_da[i]
+            integral_u_d2f_da2 += u_accident * d2f_da2[i]
+        
+        # Complete second-order derivative according to mathematical model:
+        # ∂G/∂a = ∂²p/∂a² [u(W-φ₁) - ∫ u(W-φ₁+φ₂(z)-s) f(z|a,δ) dz]
+        #         + ∂p/∂a [-∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
+        #         - ∂p/∂a [∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
+        #         + (1-p) ∫ u(W-φ₁+φ₂(z)-s) ∂²f(z|a,δ)/∂a² dz
+        #         - ∂²e/∂a²
+        
+        # Term 1: ∂²p/∂a² [u(W-φ₁) - ∫ u(W-φ₁+φ₂(z)-s) f(z|a,δ) dz]
+        term1 = d2p_da2 * (utility_no_accident - integral_u_f)
+        
+        # Term 2: ∂p/∂a [-∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
+        term2a = dp_da * (-integral_u_df_da)
+        
+        # Term 3: -∂p/∂a [∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz] (duplicate term from expansion)
+        term2b = -dp_da * integral_u_df_da
+        
+        # Term 4: (1-p) ∫ u(W-φ₁+φ₂(z)-s) ∂²f(z|a,δ)/∂a² dz
+        term3 = p_accident * integral_u_d2f_da2
+        
+        # Term 5: -∂²e/∂a²
+        term4 = -d2e_da2
+        
+        # Complete mathematical formulation
+        dG_da = term1 + term2a + term2b + term3 + term4
+        
+        return dG_da
+
+    def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=True):
+        """Solve the duopoly equilibrium using KKT conditions with pyomo."""
+        if not PYOMO_AVAILABLE:
+            raise ImportError("Pyomo is required for KKT-based solving. Please install it with: pip install pyomo")
+        
+        print("Setting up KKT system for duopoly equilibrium...")
+        
+        # Create the optimization model
+        model = pyo.ConcreteModel()
+        
+        # Sets
+        model.THETA = pyo.Set(initialize=range(self.n_theta))  # Risk types
+        model.Z = pyo.Set(initialize=range(self.n_states))     # States
+        model.I = pyo.Set(initialize=[1, 2])                  # Insurers
+        
+        # Parameters
+        model.W = pyo.Param(initialize=self.W)
+        model.s = pyo.Param(initialize=self.s)
+        model.N = pyo.Param(initialize=self.N)
+        model.theta_vals = pyo.Param(model.THETA, initialize={i: self.theta_grid[i] for i in range(self.n_theta)})
+        model.h_theta = pyo.Param(model.THETA, initialize={i: self.h_theta[i] for i in range(self.n_theta)})
+        model.z_vals = pyo.Param(model.Z, initialize={i: self.z_values[i] for i in range(self.n_states)})
+        model.delta1 = pyo.Param(initialize=self.delta1)
+        model.delta2 = pyo.Param(initialize=self.delta2)
+        
+        # Decision Variables for both insurers
+        model.a = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals, 
+                         bounds=(self.a_min, self.a_max))
+        model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=(0.1, self.s))
+        model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals, bounds=(0.0, self.s))
+        
+        # Lagrange multipliers
+        model.lam = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
+        model.nu_L = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals)
+        model.nu_U = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals)
+        model.eta = pyo.Var(model.I, domain=pyo.NonNegativeReals)
+        model.gamma = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals)
+        
+        def incentive_constraint_rule(model, i, t):
+            """
+            Incentive compatibility constraint G(θ) = 0.
+            
+            Mathematical formulation:
+            G(θ) = ∂p(a)/∂a [u(W-φ₁) - ∫ u(W-φ₁+φ₂(z)-s) f(z|a,δ) dz] 
+                   + (1-p(a)) ∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz 
+                   - ∂e(a,θ)/∂a = 0
+            """
+            theta = model.theta_vals[t]
+            a_val = model.a[i, t]
+            phi1_val = model.phi1[i]
+            delta_val = model.delta1 if i == 1 else model.delta2
+            
+            # Get phi2 values for all states
+            phi2_values = np.array([model.phi2[i, z] for z in model.Z])
+            
+            # Use the existing compute_G_function method
+            G_val = self.compute_G_function(theta, a_val, phi1_val, phi2_values, delta_val)
+            
+            return G_val == 0
+        
+        model.incentive_constraint = pyo.Constraint(model.I, model.THETA, rule=incentive_constraint_rule)
+        
+        # 2. Complementary slackness constraints - RELAXED for numerical feasibility
+        def comp_slack_lower_rule(model, i, t):
+            # Soft constraint: |nu_L * (a_min - a)| <= tolerance
+            return model.nu_L[i, t] * (self.a_min - model.a[i, t]) <= 1e-4
+        
+        model.comp_slack_lower = pyo.Constraint(model.I, model.THETA, rule=comp_slack_lower_rule)
+        
+        def comp_slack_upper_rule(model, i, t):
+            # Soft constraint: |nu_U * (a - a_max)| <= tolerance  
+            return model.nu_U[i, t] * (model.a[i, t] - self.a_max) <= 1e-4
+        
+        model.comp_slack_upper = pyo.Constraint(model.I, model.THETA, rule=comp_slack_upper_rule)
+        
+        def comp_slack_premium_rule(model, i):
+            # Soft constraint: |eta * phi1| <= tolerance
+            return model.eta[i] * model.phi1[i] <= 1e-4
+        
+        model.comp_slack_premium = pyo.Constraint(model.I, rule=comp_slack_premium_rule)
+        
+        def comp_slack_indemnity_rule(model, i, z):
+            # Already uses soft constraint - keep as is
+            return model.gamma[i, z] * model.phi2[i, z] <= 1e-6
+        
+        model.comp_slack_indemnity = pyo.Constraint(model.I, model.Z, rule=comp_slack_indemnity_rule)
+        
+        # 3. Stationarity conditions
+        def stationarity_action_rule(model, i, t):
+            """
+            Stationarity with respect to action a^i(θ).
+            
+            Mathematical formulation:
+            0 = N h(θ) ∂P_i(θ)/∂a^i(θ) [profit_term] 
+                - N h(θ) P_i(θ) [second_term_bracket]
+                + λ(θ) ∂G(θ)/∂a^i(θ) - ν_L(θ) + ν_U(θ)
+            """
+            theta = model.theta_vals[t]
+            a_val = model.a[i, t]
+            phi1_val = model.phi1[i]
+            h_theta_val = model.h_theta[t]
+            
+            # Get monitoring level
+            delta_val = model.delta1 if i == 1 else model.delta2
+            
+            # Get phi2 values for all states
+            phi2_values = np.array([model.phi2[i, z] for z in model.Z])
+            
+            # Get contract values for the other insurer
+            other_insurer = 2 if i == 1 else 1
+            a_other = model.a[other_insurer, t]
+            phi1_other = model.phi1[other_insurer]
+            phi2_other_values = np.array([model.phi2[other_insurer, z] for z in model.Z])
+            
+            # Use existing helper functions to compute choice probabilities
+            P0, P1, P2 = self.compute_choice_probabilities(theta, a_val, phi1_val, phi2_values, a_other, phi1_other, phi2_other_values)
+            Pi = P1 if i == 1 else P2
+            
+            # Use existing helper function to compute ∂P_i(θ)/∂a^i(θ)
+            dPi_da = self.compute_dPi_da(theta, i, a_val, phi1_val, phi2_values, a_other, phi1_other, phi2_other_values)
+            
+            # Use existing helper function to compute ∂G(θ)/∂a^i(θ)
+            dG_da = self.compute_dG_da(theta, a_val, phi1_val, phi2_values, delta_val)
+            
+            # Compute profit term: φ₁^i - (1-p(a^i(θ))) ∫ φ₂^i(z) f(z|a^i(θ),δ^i) dz
+            p_no_accident = self.functions.p(a_val, self.params)
+            p_accident = 1 - p_no_accident
+            
+            # Get state space and compute integral
+            state_space = self.functions.f(a_val, delta_val, self.params)
+            z_values, z_probs = state_space.get_all_states()
+            
+            integral_phi2_f = 0.0
+            for j, z in enumerate(z_values):
+                integral_phi2_f += phi2_values[j] * z_probs[j]
+            
+            profit_term = phi1_val - p_accident * integral_phi2_f
+            
+            # Compute second term bracket: -p'(a^i(θ)) ∫ φ₂^i(z) f(z|a^i(θ),δ^i) dz + (1-p(a^i(θ))) ∫ φ₂^i(z) ∂f(z|a^i(θ),δ^i)/∂a^i(θ) dz
+            dp_da = self.functions.dp_da(a_val, self.params)
+            df_da = self.functions.df_da(a_val, delta_val, self.params)
+            
+            integral_phi2_df_da = 0.0
+            for j, z in enumerate(z_values):
+                integral_phi2_df_da += phi2_values[j] * df_da[j]
+            
+            second_term_bracket = -dp_da * integral_phi2_f + p_accident * integral_phi2_df_da
+            
+            # KKT stationarity condition according to mathematical model
+            term1 = self.N * h_theta_val * dPi_da * profit_term
+            term2 = -self.N * h_theta_val * Pi * second_term_bracket
+            term3 = model.lam[i, t] * dG_da
+            
+            return term1 + term2 + term3 - model.nu_L[i, t] + model.nu_U[i, t] == 0
+        
+        model.stationarity_action = pyo.Constraint(model.I, model.THETA, rule=stationarity_action_rule)
+        
+        def stationarity_premium_rule(model, i):
+            """
+            Stationarity with respect to premium φ₁^i.
+            
+            Mathematical formulation:
+            0 = N ∫ h(θ) [∂P_i(θ)/∂φ₁^i * profit_term + P_i(θ)] dθ + ∫ λ(θ) ∂G(θ)/∂φ₁^i h(θ) dθ - η^i
+            """
+            # Get monitoring level for this insurer
+            delta_val = model.delta1 if i == 1 else model.delta2
+            
+            # Calculate complete integral over all risk types
+            integral_term = 0.0
+            lambda_dG_integral = 0.0
+            
+            for t in model.THETA:
+                theta = model.theta_vals[t]
+                h_theta_val = model.h_theta[t]
+                a_val = model.a[i, t]
+                phi1_val = model.phi1[i]
+                
+                # Get phi2 values for all states
+                phi2_values = np.array([model.phi2[i, z] for z in model.Z])
+                
+                # Get contract values for the other insurer
+                other_insurer = 2 if i == 1 else 1
+                a_other = model.a[other_insurer, t]
+                phi1_other = model.phi1[other_insurer]
+                phi2_other_values = np.array([model.phi2[other_insurer, z] for z in model.Z])
+                
+                # Use existing helper functions
+                P0, P1, P2 = self.compute_choice_probabilities(theta, a_val, phi1_val, phi2_values, a_other, phi1_other, phi2_other_values)
+                Pi = P1 if i == 1 else P2
+                
+                dPi_dphi1 = self.compute_dPi_dphi1(theta, i, a_val, phi1_val, phi2_values, a_other, phi1_other, phi2_other_values)
+                dG_dphi1 = self.compute_dG_dphi1(theta, a_val, phi1_val, phi2_values, delta_val)
+                
+                # Compute profit term: φ₁^i - (1-p(a^i(θ))) ∫ φ₂^i(z) f(z|a^i(θ),δ^i) dz
+                p_no_accident = self.functions.p(a_val, self.params)
+                p_accident = 1 - p_no_accident
+                
+                # Get state space and compute integral
+                state_space = self.functions.f(a_val, delta_val, self.params)
+                z_values, z_probs = state_space.get_all_states()
+                
+                integral_phi2_f = 0.0
+                for j, z in enumerate(z_values):
+                    integral_phi2_f += phi2_values[j] * z_probs[j]
+                
+                profit_term = phi1_val - p_accident * integral_phi2_f
+                
+                # First integral term: ∫ h(θ) [∂P_i(θ)/∂φ₁^i * profit_term + P_i(θ)] dθ
+                integral_term += h_theta_val * (dPi_dphi1 * profit_term + Pi)
+                
+                # Second integral term: ∫ λ(θ) ∂G(θ)/∂φ₁^i h(θ) dθ
+                lambda_dG_integral += model.lam[i, t] * dG_dphi1 * h_theta_val
+            
+            # Stationarity condition
+            return self.N * integral_term + lambda_dG_integral - model.eta[i] == 0
+        
+        model.stationarity_premium = pyo.Constraint(model.I, rule=stationarity_premium_rule)
+        
+        def stationarity_indemnity_rule(model, i, z):
+            """
+            Stationarity with respect to indemnity φ₂^i(z).
+            
+            Mathematical formulation:
+            0 = -N ∫ h(θ) P_i(θ) (1-p(a^i(θ))) f(z|a^i(θ),δ^i) dθ 
+                - N ∫ h(θ) ∂P_i(θ)/∂φ₂^i(z) [profit_term] dθ 
+                + ∫ λ(θ) ∂G(θ)/∂φ₂^i(z) h(θ) dθ - γ^i(z)
+            """
+            # Get monitoring level for this insurer
+            delta_val = model.delta1 if i == 1 else model.delta2
+            
+            # Calculate complete integrals over all risk types
+            first_integral = 0.0     # -N ∫ h(θ) P_i(θ) (1-p(a^i(θ))) f(z|a^i(θ),δ^i) dθ
+            second_integral = 0.0    # -N ∫ h(θ) ∂P_i(θ)/∂φ₂^i(z) [profit_term] dθ
+            lambda_dG_integral = 0.0 # ∫ λ(θ) ∂G(θ)/∂φ₂^i(z) h(θ) dθ
+            
+            for t in model.THETA:
+                theta = model.theta_vals[t]
+                h_theta_val = model.h_theta[t]
+                a_val = model.a[i, t]
+                phi1_val = model.phi1[i]
+                
+                # Get phi2 values for all states
+                phi2_values = np.array([model.phi2[i, z_idx] for z_idx in model.Z])
+                
+                # Get contract values for the other insurer
+                other_insurer = 2 if i == 1 else 1
+                a_other = model.a[other_insurer, t]
+                phi1_other = model.phi1[other_insurer]
+                phi2_other_values = np.array([model.phi2[other_insurer, z_idx] for z_idx in model.Z])
+                
+                # Use existing helper functions
+                P0, P1, P2 = self.compute_choice_probabilities(theta, a_val, phi1_val, phi2_values, a_other, phi1_other, phi2_other_values)
+                Pi = P1 if i == 1 else P2
+                
+                dPi_dphi2 = self.compute_dPi_dphi2(theta, i, z, a_val, phi1_val, phi2_values, a_other, phi1_other, phi2_other_values)
+                dG_dphi2 = self.compute_dG_dphi2(theta, a_val, phi1_val, phi2_values, delta_val, z)
+                
+                # Compute profit term: φ₁^i - (1-p(a^i(θ))) ∫ φ₂^i(t) f(t|a^i(θ),δ^i) dt
+                p_no_accident = self.functions.p(a_val, self.params)
+                p_accident = 1 - p_no_accident
+                
+                # Get state space and compute integral
+                state_space = self.functions.f(a_val, delta_val, self.params)
+                z_values, z_probs = state_space.get_all_states()
+                
+                integral_phi2_f = 0.0
+                for j, z_val in enumerate(z_values):
+                    integral_phi2_f += phi2_values[j] * z_probs[j]
+                
+                profit_term = phi1_val - p_accident * integral_phi2_f
+                
+                # Get f(z|a^i(θ),δ^i) for the specific state z
+                f_z_val = z_probs[z]
+                
+                # First integral: -N ∫ h(θ) P_i(θ) (1-p(a^i(θ))) f(z|a^i(θ),δ^i) dθ
+                first_integral += h_theta_val * Pi * p_accident * f_z_val
+                
+                # Second integral: -N ∫ h(θ) ∂P_i(θ)/∂φ₂^i(z) [profit_term] dθ
+                second_integral += h_theta_val * dPi_dphi2 * profit_term
+                
+                # Third integral: ∫ λ(θ) ∂G(θ)/∂φ₂^i(z) h(θ) dθ
+                lambda_dG_integral += model.lam[i, t] * dG_dphi2 * h_theta_val
+            
+            # Stationarity condition
+            return -self.N * first_integral - self.N * second_integral + lambda_dG_integral - model.gamma[i, z] == 0
+        
+        model.stationarity_indemnity = pyo.Constraint(model.I, model.Z, rule=stationarity_indemnity_rule)
+        
+        # Objective function - 0
+        
+        model.obj = pyo.Objective(expr=0, sense=pyo.minimize)
+        
+        # Initial values
+        for i in model.I:
+            model.phi1[i].set_value(self.s * 0.3)  # Start with lower premium
+            for z in model.Z:
+                model.phi2[i, z].set_value(self.s * 0.2)  # Start with lower indemnity
+            for t in model.THETA:
+                model.a[i, t].set_value(0.5)  # Start with middle action
+                model.lam[i, t].set_value(0.1)  # Small positive multiplier
+                model.nu_L[i, t].set_value(0.0)  # Start with zero
+                model.nu_U[i, t].set_value(0.0)  # Start with zero
+            model.eta[i].set_value(0.1)  # Small positive multiplier
+            for z in model.Z:
+                model.gamma[i, z].set_value(0.1)  # Small positive multiplier
+        
+        # Debug mode: Analyze model structure
+        if debug_mode:
+            print("\n" + "="*50)
+            print("DEBUG MODE: MODEL ANALYSIS")
+            print("="*50)
+            
+            # Count variables and constraints
+            total_vars = len(model.component_map(pyo.Var))
+            total_constrs = len(model.component_map(pyo.Constraint))
+            
+            print(f"Model Statistics:")
+            print(f"  - Variables: {total_vars}")
+            print(f"  - Constraints: {total_constrs}")
+            print(f"  - C/V Ratio: {total_constrs/total_vars:.2f}")
+            
+            # Check variable bounds
+            print(f"\nVariable Bounds Check:")
+            for var_name, var_obj in model.component_map(pyo.Var).items():
+                print(f"  {var_name}:")
+                for idx in var_obj.index_set():
+                    var = var_obj[idx]
+                    lb = var.lb
+                    ub = var.ub
+                    if lb is not None and ub is not None and lb > ub:
+                        print(f"    WARNING: Bound conflict at {var_name}[{idx}]: lb={lb}, ub={ub}")
+                    elif lb is not None and ub is not None and (ub - lb) < 1e-6:
+                        print(f"    WARNING: Tight bounds at {var_name}[{idx}]: range={ub-lb:.2e}")
+        
+        # Solve the model
+        print(f"\nSolving KKT system with {solver_name} solver...")
+        
+        try:
+            opt = pyo.SolverFactory(solver_name)
+            if solver_name == 'ipopt':
+                opt.options.update({
+                    'max_iter': 10000 if debug_mode else 5000,  # More iterations for complex problems
+                    'tol': 1e-6 if debug_mode else 1e-5,  # Relaxed tolerance
+                    'print_level': 5 if verbose or debug_mode else 0,
+                    'output_file': 'ipopt_debug.out' if debug_mode else None,
+                    'linear_solver': 'mumps',  # Good for economic problems
+                    'hessian_approximation': 'limited-memory',
+                    'mu_strategy': 'adaptive',
+                    'bound_push': 1e-6,  # Relaxed for better convergence
+                    'bound_frac': 1e-6,
+                    'slack_bound_push': 1e-6,
+                    'slack_bound_frac': 1e-6,
+                    'dual_inf_tol': 1e-6,  # Relaxed dual infeasibility tolerance
+                    'compl_inf_tol': 1e-6,  # Relaxed complementarity tolerance
+                    'acceptable_tol': 1e-5,  # Relaxed acceptable tolerance
+                    'acceptable_iter': 15,  # More acceptable iterations
+                    'alpha_for_y': 'primal',  # Better for economic problems
+                    'recalc_y': 'yes',  # Recalculate dual variables
+                    'mehrotra_algorithm': 'yes',  # Use Mehrotra's algorithm
+                    'warm_start_init_point': 'yes',  # Use warm start
+                    'warm_start_bound_push': 1e-6,
+                    'warm_start_bound_frac': 1e-6,
+                    'warm_start_slack_bound_push': 1e-6,
+                    'warm_start_slack_bound_frac': 1e-6
+                })
+            
+            import time
+            start_time = time.time()
+            
+            results = opt.solve(model, tee=verbose or debug_mode)
+            
+            solve_time = time.time() - start_time
+            
+            # Enhanced result analysis
+            if debug_mode:
+                print(f"\n" + "="*50)
+                print("DEBUG MODE: SOLVER RESULTS ANALYSIS")
+                print("="*50)
+                print(f"Solver Status: {results.solver.status}")
+                print(f"Termination Condition: {results.solver.termination_condition}")
+                print(f"Solve Time: {solve_time:.3f} seconds")
+                
+                if hasattr(results.solver, 'iterations'):
+                    print(f"Iterations: {results.solver.iterations}")
+                
+                if hasattr(results.solver, 'objective_value'):
+                    print(f"Objective Value: {results.solver.objective_value}")
+                
+                # Check constraint violations
+                print(f"\nConstraint Violation Analysis:")
+                max_violation = 0.0
+                num_violated = 0
+                
+                for constr_name, constr_obj in model.component_map(pyo.Constraint).items():
+                    for idx in constr_obj.index_set():
+                        constr = constr_obj[idx]
                         try:
-                            f_lower = ic_func(self.a_min)
-                            f_upper = ic_func(self.a_max)
-                        except Exception as e2:
-                            f_lower = None
-                            f_upper = None
-                        # Log the failure
-                        # if logger is not None:
-                        #     logger.log_warning(f"Failed to solve incentive constraint for insurer {insurer_id}, theta={theta}, phi1={phi1}, phi2={phi2_tuple}: {e}. Function at bounds: lower={f_lower}, upper={f_upper}")
-                        # else:
-                        #     print(f"Failed to solve incentive constraint for insurer {insurer_id}, theta={theta}, phi1={phi1}, phi2={phi2_tuple}: {e}. Function at bounds: lower={f_lower}, upper={f_upper}")
-                        feasible = False
-                        break
-                if feasible:
-                    a_schedule = np.array(a_schedule)
-                    utilities = self.compute_utility_grid(insurer_id, a_schedule, phi1, phi2_values)
-                    # Compute expected profit for this contract (single-insurer, so use uniform choice probs)
-                    uniform_choice_probs = np.ones(self.n_theta) / self.n_theta
-                    expected_profit = self.compute_expected_profit(insurer_id, a_schedule, phi1, phi2_values, uniform_choice_probs)
-                    # Add both naming conventions for compatibility
-                    contracts.append({
-                        'phi1': phi1,
-                        'phi2': phi2_values,
-                        'a_schedule': a_schedule,
-                        'utilities': utilities,
-                        'premium': phi1,
-                        'indemnity_values': phi2_values,
-                        'expected_profit': expected_profit
-                    })
-        return contracts
-
-    def _process_contract_parallel(self, args):
-        """
-        Helper function for parallel processing of individual contracts.
-        
-        Args:
-            args: Tuple containing (insurer_id, phi1, phi2_tuple, delta, theta_grid, a_min, a_max, params)
-            
-        Returns:
-            Contract dictionary if feasible, None otherwise
-        """
-        insurer_id, phi1, phi2_tuple, delta, theta_grid, a_min, a_max, params = args
-        
-        # Create a temporary solver instance for this worker
-        # We need to recreate the functions and solver for multiprocessing
-        function_config = {
-            'p': 'logistic',
-            'm': 'linear', 
-            'e': 'power',
-            'u': 'logarithmic',
-            'f': 'binary_states',
-            'c': 'linear'
-        }
-        functions = FlexibleFunctions(function_config)
-        temp_solver = DuopolySolver(functions, params)
-        
-        phi2_values = np.array(phi2_tuple)
-        a_schedule = []
-        feasible = True
-        
-        for theta in theta_grid:
-            # Solve incentive constraint = 0 for a in action bounds
-            def ic_func(a):
-                return temp_solver.incentive_constraint(a, phi1, phi2_values, delta, theta)
-            try:
-                sol = root_scalar(ic_func, bracket=(a_min, a_max), method='brentq')
-                if not sol.converged:
-                    feasible = False
-                    break
-                a_schedule.append(sol.root)
-            except Exception as e:
-                feasible = False
-                break
+                            body_value = pyo.value(constr.body)
+                            lower_value = pyo.value(constr.lower) if constr.lower is not None else None
+                            upper_value = pyo.value(constr.upper) if constr.upper is not None else None
+                            
+                            violation = 0.0
+                            if lower_value is not None and body_value < lower_value:
+                                violation = lower_value - body_value
+                            elif upper_value is not None and body_value > upper_value:
+                                violation = body_value - upper_value
+                            
+                            if violation > 1e-6:
+                                num_violated += 1
+                                max_violation = max(max_violation, violation)
+                                if num_violated <= 5:  # Show first 5 violations
+                                    print(f"  {constr_name}[{idx}]: violation={violation:.2e}")
+                                    
+                        except Exception as e:
+                            print(f"  Error evaluating {constr_name}[{idx}]: {e}")
                 
-        if feasible:
-            a_schedule = np.array(a_schedule)
-            utilities = temp_solver.compute_utility_grid(insurer_id, a_schedule, phi1, phi2_values)
-            # Compute expected profit for this contract (single-insurer, so use uniform choice probs)
-            uniform_choice_probs = np.ones(len(theta_grid)) / len(theta_grid)
-            expected_profit = temp_solver.compute_expected_profit(insurer_id, a_schedule, phi1, phi2_values, uniform_choice_probs)
+                print(f"Total violations: {num_violated}")
+                print(f"Maximum violation: {max_violation:.2e}")
+                
+                # Read detailed solver output if available
+                try:
+                    with open('ipopt_debug.out', 'r') as f:
+                        solver_output = f.read()
+                        print(f"\nDetailed Solver Output (last 20 lines):")
+                        lines = solver_output.strip().split('\n')
+                        for line in lines[-20:]:
+                            print(f"  {line}")
+                except FileNotFoundError:
+                    print("No detailed solver output file found.")
             
-            return {
-                'phi1': phi1,
-                'phi2': phi2_values,
-                'a_schedule': a_schedule,
-                'utilities': utilities,
-                'premium': phi1,
-                'indemnity_values': phi2_values,
-                'expected_profit': expected_profit
-            }
-        else:
+            if (results.solver.status == SolverStatus.ok and 
+                results.solver.termination_condition == TerminationCondition.optimal):
+                
+                print("KKT system solved successfully!")
+                
+                # Extract solution
+                solution = {
+                    'insurer1': {
+                        'phi1': pyo.value(model.phi1[1]),
+                        'phi2': np.array([pyo.value(model.phi2[1, z]) for z in model.Z]),
+                        'a_schedule': np.array([pyo.value(model.a[1, t]) for t in model.THETA]),
+                        'multipliers': {
+                            'lambda': np.array([pyo.value(model.lam[1, t]) for t in model.THETA]),
+                            'nu_L': np.array([pyo.value(model.nu_L[1, t]) for t in model.THETA]),
+                            'nu_U': np.array([pyo.value(model.nu_U[1, t]) for t in model.THETA]),
+                            'eta': pyo.value(model.eta[1]),
+                            'gamma': np.array([pyo.value(model.gamma[1, z]) for z in model.Z])
+                        }
+                    },
+                    'insurer2': {
+                        'phi1': pyo.value(model.phi1[2]),
+                        'phi2': np.array([pyo.value(model.phi2[2, z]) for z in model.Z]),
+                        'a_schedule': np.array([pyo.value(model.a[2, t]) for t in model.THETA]),
+                        'multipliers': {
+                            'lambda': np.array([pyo.value(model.lam[2, t]) for t in model.THETA]),
+                            'nu_L': np.array([pyo.value(model.nu_L[2, t]) for t in model.THETA]),
+                            'nu_U': np.array([pyo.value(model.nu_U[2, t]) for t in model.THETA]),
+                            'eta': pyo.value(model.eta[2]),
+                            'gamma': np.array([pyo.value(model.gamma[2, z]) for z in model.Z])
+                        }
+                    },
+                    'solver_status': 'optimal',
+                    'solver_info': results,
+                    'solve_time': solve_time
+                }
+                
+                return solution
+                
+            else:
+                print(f"\nSolver failed!")
+                print(f"  Status: {results.solver.status}")
+                print(f"  Termination: {results.solver.termination_condition}")
+                
+                # Provide specific guidance based on termination condition
+                if results.solver.termination_condition == TerminationCondition.infeasible:
+                    print(f"  REASON: Problem is infeasible")
+                elif results.solver.termination_condition == TerminationCondition.infeasibleOrUnbounded:
+                    print(f"  REASON: Problem is infeasible or unbounded")
+                elif results.solver.termination_condition == TerminationCondition.maxIterations:
+                    print(f"  REASON: Maximum iterations reached")
+                elif results.solver.termination_condition == TerminationCondition.other:
+                    print(f"  REASON: Other termination condition")
+                
+                return None
+                
+        except Exception as e:
+            print(f"Error solving KKT system: {e}")
+            if debug_mode:
+                import traceback
+                print("Full traceback:")
+                traceback.print_exc()
             return None
 
-    @staticmethod
-    def _process_contract_parallel_static(args):
+    def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None):
         """
-        Static helper function for parallel processing of individual contracts.
+        Run KKT-based simulation for duopoly insurance model.
         
         Args:
-            args: Tuple containing (insurer_id, phi1, phi2_tuple, delta, theta_grid, a_min, a_max, params, function_config)
+            solver_name: Name of the solver to use
+            verbose: Whether to print detailed output
+            save_plots: Whether to save plots to files
+            logger: SimulationLogger instance for recording results
             
         Returns:
-            Contract dictionary if feasible, None otherwise
+            Tuple of (success, solution) where solution is a dictionary containing simulation results
         """
-        insurer_id, phi1, phi2_tuple, delta, theta_grid, a_min, a_max, params, function_config = args
-        
-        # Create a temporary solver instance for this worker
-        functions = FlexibleFunctions(function_config)
-        temp_solver = DuopolySolver(functions, params)
-        
-        phi2_values = np.array(phi2_tuple)
-        a_schedule = []
-        feasible = True
-        
-        for theta in theta_grid:
-            # Solve incentive constraint = 0 for a in action bounds
-            def ic_func(a):
-                return temp_solver.incentive_constraint(a, phi1, phi2_values, delta, theta)
-            try:
-                sol = root_scalar(ic_func, bracket=(a_min, a_max), method='brentq')
-                if not sol.converged:
-                    feasible = False
-                    break
-                a_schedule.append(sol.root)
-            except Exception as e:
-                feasible = False
-                break
+        print("Testing KKT solver...")
+        print(f"Model configuration:")
+        print(f"  - Risk types: {self.n_theta}")
+        print(f"  - States: {self.n_states}")
+        print(f"  - Action bounds: [{self.a_min}, {self.a_max}]")
+        print(f"  - Initial wealth W: {self.W}")
+        print(f"  - Accident severity s: {self.s}")
+        print(f"  - Monitoring levels: δ₁={self.delta1}, δ₂={self.delta2}")
+
+        # Log experiment start if logger is provided
+        if logger:
+            logger.log_experiment_start("Duopoly insurance simulation")
+            logger.log_simulation_settings({
+                'solver_name': solver_name,
+                'save_plots': save_plots,
+                'verbose': verbose
+            })
+            logger.log_parameters(self.params)
+
+        try:
+            start_time = time.time()
+            solution = self.build_and_solve_model(solver_name=solver_name, verbose=verbose)
+            solve_time = time.time() - start_time
+
+            if solution is not None:
+                print("\n" + "="*50)
+                print("KKT SOLVER SUCCESS!")
+                print("="*50)
+
+                for insurer_id in [1, 2]:
+                    key = f'insurer{insurer_id}'
+                    print(f"\nInsurer {insurer_id} Solution:")
+                    print(f"  Premium φ₁^{insurer_id}: {solution[key]['phi1']:.4f}")
+                    print(f"  Indemnities φ₂^{insurer_id}: {solution[key]['phi2']}")
+                    print(f"  Action schedule a^{insurer_id}(θ): {solution[key]['a_schedule']}")
+                    print(f"  Average action: {np.mean(solution[key]['a_schedule']):.4f}")
+
+                # Log performance metrics if logger is provided
+                if logger:
+                    logger.log_performance_metric("solve_time_seconds", solve_time)
+                    
+                    # Log the solution
+                    solution_for_logging = {
+                        'insurer1': {
+                            'premium': solution['insurer1']['phi1'],
+                            'indemnity_values': solution['insurer1']['phi2'],
+                            'a_schedule': solution['insurer1']['a_schedule'],
+                            'expected_profit': 0  # Could compute this if needed
+                        },
+                        'insurer2': {
+                            'premium': solution['insurer2']['phi1'],
+                            'indemnity_values': solution['insurer2']['phi2'],
+                            'a_schedule': solution['insurer2']['a_schedule'],
+                            'expected_profit': 0  # Could compute this if needed
+                        },
+                        'total_profit': 0,
+                        'market_share': {}
+                    }
+                    logger.log_duopoly_solution(solution_for_logging, "single_configuration")
+
+                # Generate plots if requested
+                if save_plots:
+                    plots_dir = Path("outputs") / "plots"
+                    plots_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Comprehensive results plot
+                    plot_path = plots_dir / "comprehensive_results.png"
+                    plot_results(self, solution, save_path=str(plot_path))
+                    
+                    if logger:
+                        logger.log_plot_generation("comprehensive_results", str(plot_path), "single_configuration")
+
+                # Log experiment end if logger is provided
+                if logger:
+                    logger.log_experiment_end("Simulation completed successfully")
+                    logger.print_summary()
+
+                return True, solution
+            else:
+                print("KKT solver failed to find a solution.")
                 
-        if feasible:
-            a_schedule = np.array(a_schedule)
-            utilities = temp_solver.compute_utility_grid(insurer_id, a_schedule, phi1, phi2_values)
-            # Compute expected profit for this contract (single-insurer, so use uniform choice probs)
-            uniform_choice_probs = np.ones(len(theta_grid)) / len(theta_grid)
-            expected_profit = temp_solver.compute_expected_profit(insurer_id, a_schedule, phi1, phi2_values, uniform_choice_probs)
-            
-            return {
-                'phi1': phi1,
-                'phi2': phi2_values,
-                'a_schedule': a_schedule,
-                'utilities': utilities,
-                'premium': phi1,
-                'indemnity_values': phi2_values,
-                'expected_profit': expected_profit
-            }
-        else:
-            return None
-
-    def grid_search_contracts_parallel(self, insurer_id: int, phi1_grid, phi2_grid, logger=None, n_jobs=None):
-        """
-        Parallel brute-force grid search for all feasible contracts for one insurer.
-        
-        Args:
-            insurer_id: 1 or 2 for the insurer
-            phi1_grid: Grid of premium values
-            phi2_grid: Grid of indemnity value tuples
-            logger: Optional logger instance
-            n_jobs: Number of parallel jobs (default: number of CPU cores)
-            
-        Returns:
-            List of dicts: {'phi1': ..., 'phi2': ..., 'a_schedule': ..., 'utilities': ..., ...}
-        """
-        if insurer_id == 1:
-            delta = self.delta1
-        else:
-            delta = self.delta2
-            
-        if n_jobs is None:
-            n_jobs = mp.cpu_count()
-            
-        print(f"Starting parallel grid search for insurer {insurer_id} with {n_jobs} workers...")
-        start_time = time.time()
-        
-        # Get the function configuration from the current solver
-        function_config = self.get_function_config()
-        
-        # Prepare arguments for parallel processing
-        args_list = []
-        for phi1 in phi1_grid:
-            for phi2_tuple in phi2_grid:
-                args = (insurer_id, phi1, phi2_tuple, delta, self.theta_grid, 
-                       self.a_min, self.a_max, self.params, function_config)
-                args_list.append(args)
-        
-        # Use multiprocessing to process contracts in parallel
-        with mp.Pool(processes=n_jobs) as pool:
-            results = pool.map(DuopolySolver._process_contract_parallel_static, args_list)
-        
-        # Filter out None results (infeasible contracts)
-        contracts = [contract for contract in results if contract is not None]
-        
-        end_time = time.time()
-        print(f"Parallel grid search completed for insurer {insurer_id} in {end_time - start_time:.2f} seconds")
-        print(f"Found {len(contracts)} feasible contracts out of {len(args_list)} total combinations")
-        
-        return contracts
-
-    def get_function_config(self):
-        """Get the function configuration from the current solver."""
-        return self.functions.config
-
-    def _process_contract_pair_parallel(self, args):
-        """
-        Helper function for parallel processing of contract pairs.
-        
-        Args:
-            args: Tuple containing (c1, c2, V0, mu, params)
-            
-        Returns:
-            Result dictionary for the contract pair
-        """
-        c1, c2, V0, mu, params = args
-        
-        # Create temporary solver for this worker
-        function_config = {
-            'p': 'logistic',
-            'm': 'linear', 
-            'e': 'power',
-            'u': 'logarithmic',
-            'f': 'binary_states',
-            'c': 'linear'
-        }
-        functions = FlexibleFunctions(function_config)
-        temp_solver = DuopolySolver(functions, params)
-        
-        V1 = c1['utilities']
-        V2 = c2['utilities']
-        
-        # Logit choice probabilities
-        P0, P1, P2 = FlexibleFunctions.choice_probabilities(V0, V1, V2, mu)
-        profit_1 = temp_solver.compute_expected_profit(1, c1['a_schedule'], c1['phi1'], c1['phi2'], P1)
-        profit_2 = temp_solver.compute_expected_profit(2, c2['a_schedule'], c2['phi1'], c2['phi2'], P2)
-        
-        # Add profit_1, profit_2, and expected_profit to insurer dicts for downstream compatibility
-        c1_copy = dict(c1)  # Copy to avoid mutating original
-        c2_copy = dict(c2)
-        c1_copy['profit_1'] = profit_1
-        c1_copy['expected_profit'] = profit_1
-        c2_copy['profit_2'] = profit_2
-        c2_copy['expected_profit'] = profit_2
-        
-        return {
-            'insurer1': c1_copy,
-            'insurer2': c2_copy,
-            'choice_probabilities': {'P0': P0, 'P1': P1, 'P2': P2},
-            'utilities': {'V0': V0, 'V1': V1, 'V2': V2},
-            'profit_1': profit_1,
-            'profit_2': profit_2
-        }
-
-    @staticmethod
-    def _process_contract_pair_parallel_static(args):
-        """
-        Static helper function for parallel processing of contract pairs.
-        
-        Args:
-            args: Tuple containing (c1, c2, V0, mu, params, function_config)
-            
-        Returns:
-            Result dictionary for the contract pair
-        """
-        c1, c2, V0, mu, params, function_config = args
-        
-        # Create temporary solver for this worker
-        functions = FlexibleFunctions(function_config)
-        temp_solver = DuopolySolver(functions, params)
-        
-        V1 = c1['utilities']
-        V2 = c2['utilities']
-        
-        # Logit choice probabilities
-        P0, P1, P2 = FlexibleFunctions.choice_probabilities(V0, V1, V2, mu)
-        profit_1 = temp_solver.compute_expected_profit(1, c1['a_schedule'], c1['phi1'], c1['phi2'], P1)
-        profit_2 = temp_solver.compute_expected_profit(2, c2['a_schedule'], c2['phi1'], c2['phi2'], P2)
-        
-        # Add profit_1, profit_2, and expected_profit to insurer dicts for downstream compatibility
-        c1_copy = dict(c1)  # Copy to avoid mutating original
-        c2_copy = dict(c2)
-        c1_copy['profit_1'] = profit_1
-        c1_copy['expected_profit'] = profit_1
-        c2_copy['profit_2'] = profit_2
-        c2_copy['expected_profit'] = profit_2
-        
-        return {
-            'insurer1': c1_copy,
-            'insurer2': c2_copy,
-            'choice_probabilities': {'P0': P0, 'P1': P1, 'P2': P2},
-            'utilities': {'V0': V0, 'V1': V1, 'V2': V2},
-            'profit_1': profit_1,
-            'profit_2': profit_2
-        }
-
-    def brute_force_duopoly(self, logger=None, n_jobs=None, evaluation_method='simple'):
-        """
-        Parallel brute-force grid search for both insurers, find all Pareto optimal equilibria.
-        
-        Args:
-            logger: Optional logger instance
-            n_jobs: Number of parallel jobs (default: number of CPU cores)
-            evaluation_method: Method for contract pair evaluation:
-                              'original' - Evaluate all pairs at once
-                              'simple' - Simple efficient method with pre-filtering
-                              'incremental' - Incremental Pareto method with chunked processing
-                              'divide_conquer' - Divide-and-conquer parallel evaluation
-            
-        Returns:
-            List of Pareto optimal contract pairs and their outcomes
-        """
-        if n_jobs is None:
-            n_jobs = mp.cpu_count()
-            
-        print(f"Starting parallel duopoly grid search with {n_jobs} workers using {evaluation_method} method...")
-        start_time = time.time()
-        
-        # Get grid parameters
-        n_phi1 = int(self.params.get('n_phi1_grid', 50))
-        n_phi2 = int(self.params.get('n_phi2_grid', 50))
-        phi1_grid = np.linspace(0.1, self.s, n_phi1)
-        phi2_grid_1d = np.linspace(0.0, self.s, n_phi2)
-        
-        # Cartesian product for phi2(z) for all states
-        phi2_grid = list(product(phi2_grid_1d, repeat=self.n_states))
-        
-        # Get the function configuration from the current solver
-        function_config = self.get_function_config()
-        
-        # Enumerate all contracts for each insurer in parallel
-        print("Computing contracts for insurer 1...")
-        contracts_1 = self.grid_search_contracts_parallel(1, phi1_grid, phi2_grid, logger=logger, n_jobs=n_jobs)
-        
-        print("Computing contracts for insurer 2...")
-        contracts_2 = self.grid_search_contracts_parallel(2, phi1_grid, phi2_grid, logger=logger, n_jobs=n_jobs)
-        
-        print(f"Generated {len(contracts_1)} contracts for insurer 1, {len(contracts_2)} for insurer 2")
-        
-        # Evaluate contract pairs using selected method
-        V0 = self.compute_reservation_utility_grid()
-        mu = self.params.get('xi_scale')
-        
-        if evaluation_method == 'original':
-            pareto = self._evaluate_all_pairs_original(contracts_1, contracts_2, V0, mu, function_config, n_jobs)
-        elif evaluation_method == 'simple':
-            pareto = self.simple_efficient_contract_evaluation(contracts_1, contracts_2, V0, mu, n_jobs=n_jobs)
-        elif evaluation_method == 'incremental':
-            pareto = self.incremental_pareto_evaluation(contracts_1, contracts_2, V0, mu, n_jobs=n_jobs)
-        elif evaluation_method == 'divide_conquer':
-            pareto = self.divide_conquer_evaluation(contracts_1, contracts_2, V0, mu, n_jobs=n_jobs)
-        else:
-            raise ValueError(f"Unknown evaluation method: {evaluation_method}")
-        
-        end_time = time.time()
-        print(f"Parallel duopoly grid search completed in {end_time - start_time:.2f} seconds")
-        print(f"Found {len(pareto)} Pareto optimal solutions using {evaluation_method} method")
-        
-        return pareto
-
-    def _evaluate_all_pairs_original(self, contracts_1, contracts_2, V0, mu, function_config, n_jobs):
-        """Original method: evaluate all contract pairs at once."""
-        print("Evaluating all contract pairs at once...")
-        
-        # Prepare arguments for parallel processing of contract pairs
-        args_list = []
-        for c1 in contracts_1:
-            for c2 in contracts_2:
-                args = (c1, c2, V0, mu, self.params, function_config)
-                args_list.append(args)
-        
-        print(f"Evaluating {len(args_list)} contract pairs...")
-        
-        # Use multiprocessing to process contract pairs in parallel
-        with mp.Pool(processes=n_jobs) as pool:
-            results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
-        
-        # Find Pareto optimal contract pairs
-        pareto = self.pareto_optimal_solutions(results)
-        return pareto
-
-    def simple_efficient_contract_evaluation(self, contracts_1, contracts_2, V0, mu, n_jobs=None):
-        """
-        Simple efficient method with pre-filtering and optimized batching.
-        
-        Args:
-            contracts_1: List of contracts for insurer 1
-            contracts_2: List of contracts for insurer 2
-            V0: Reservation utility grid
-            mu: Logit scale parameter
-            n_jobs: Number of parallel jobs
-            
-        Returns:
-            List of Pareto optimal contract pairs
-        """
-        if n_jobs is None:
-            n_jobs = mp.cpu_count()
-            
-        print("Using simple efficient contract evaluation...")
-        start_time = time.time()
-        
-        # Step 1: Pre-filter contracts to remove clearly dominated ones
-        print("Pre-filtering contracts...")
-        filtered_1 = self._prefilter_contracts(contracts_1)
-        filtered_2 = self._prefilter_contracts(contracts_2)
-        
-        print(f"After pre-filtering: {len(filtered_1)} contracts for insurer 1, {len(filtered_2)} for insurer 2")
-        reduction_1 = (1 - len(filtered_1) / len(contracts_1)) * 100
-        reduction_2 = (1 - len(filtered_2) / len(contracts_2)) * 100
-        print(f"Reduced contract space by {reduction_1:.1f}% and {reduction_2:.1f}% respectively")
-        
-        # Step 2: Evaluate contract pairs with optimized batching
-        function_config = self.get_function_config()
-        batch_size = min(1000, len(filtered_1) * len(filtered_2) // (n_jobs * 4))  # Adaptive batch size
-        
-        all_pairs = [(c1, c2) for c1 in filtered_1 for c2 in filtered_2]
-        print(f"Evaluating {len(all_pairs)} filtered contract pairs in batches of {batch_size}...")
-        
-        all_results = []
-        for i in range(0, len(all_pairs), batch_size):
-            batch = all_pairs[i:i + batch_size]
-            args_list = [(c1, c2, V0, mu, self.params, function_config) for c1, c2 in batch]
-            
-            with mp.Pool(processes=n_jobs) as pool:
-                batch_results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
-            
-            all_results.extend(batch_results)
-            
-            if (i // batch_size + 1) % 10 == 0:  # Progress indicator
-                print(f"Processed {i + len(batch)}/{len(all_pairs)} pairs...")
-        
-        # Step 3: Find Pareto optimal solutions
-        pareto = self.pareto_optimal_solutions(all_results)
-        
-        end_time = time.time()
-        print(f"Simple efficient evaluation completed in {end_time - start_time:.2f} seconds")
-        
-        return pareto
-
-    def incremental_pareto_evaluation(self, contracts_1, contracts_2, V0, mu, n_jobs=None, chunk_size=500):
-        """
-        Incremental Pareto method: builds Pareto frontier incrementally by processing contracts in chunks.
-        
-        Args:
-            contracts_1: List of contracts for insurer 1
-            contracts_2: List of contracts for insurer 2
-            V0: Reservation utility grid
-            mu: Logit scale parameter
-            n_jobs: Number of parallel jobs
-            chunk_size: Size of each processing chunk
-            
-        Returns:
-            List of Pareto optimal contract pairs
-        """
-        if n_jobs is None:
-            n_jobs = mp.cpu_count()
-            
-        print("Using incremental Pareto evaluation...")
-        start_time = time.time()
-        
-        function_config = self.get_function_config()
-        running_pareto = []
-        
-        # Process contracts in chunks to maintain memory efficiency
-        total_pairs = len(contracts_1) * len(contracts_2)
-        processed_pairs = 0
-        
-        for i in range(0, len(contracts_1), chunk_size):
-            chunk_1 = contracts_1[i:i + chunk_size]
-            
-            for j in range(0, len(contracts_2), chunk_size):
-                chunk_2 = contracts_2[j:j + chunk_size]
+                if logger:
+                    logger.log_error("Solver failed to converge")
+                    logger.log_experiment_end("Simulation failed")
                 
-                # Evaluate this chunk
-                chunk_pairs = [(c1, c2) for c1 in chunk_1 for c2 in chunk_2]
-                args_list = [(c1, c2, V0, mu, self.params, function_config) for c1, c2 in chunk_pairs]
-                
-                with mp.Pool(processes=n_jobs) as pool:
-                    chunk_results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
-                
-                # Find Pareto optimal solutions in this chunk
-                chunk_pareto = self.pareto_optimal_solutions(chunk_results)
-                
-                # Merge with running Pareto frontier
-                combined_results = running_pareto + chunk_pareto
-                running_pareto = self.pareto_optimal_solutions(combined_results)
-                
-                processed_pairs += len(chunk_pairs)
-                if processed_pairs % (chunk_size * chunk_size * 5) == 0:  # Progress indicator
-                    print(f"Processed {processed_pairs}/{total_pairs} pairs, current Pareto size: {len(running_pareto)}")
-        
-        end_time = time.time()
-        print(f"Incremental Pareto evaluation completed in {end_time - start_time:.2f} seconds")
-        print(f"Final Pareto frontier contains {len(running_pareto)} solutions")
-        
-        return running_pareto
+                return False, None
 
-    def divide_conquer_evaluation(self, contracts_1, contracts_2, V0, mu, n_jobs=None, max_depth=3):
-        """
-        Divide-and-conquer parallel evaluation: recursively partitions contract pairs into subsets,
-        evaluates each subset in parallel, and merges Pareto frontiers.
-        
-        Args:
-            contracts_1: List of contracts for insurer 1
-            contracts_2: List of contracts for insurer 2
-            V0: Reservation utility grid
-            mu: Logit scale parameter
-            n_jobs: Number of parallel jobs
-            max_depth: Maximum recursion depth
+        except Exception as e:
+            error_msg = f"Error testing KKT solver: {e}"
+            print(error_msg)
             
-        Returns:
-            List of Pareto optimal contract pairs
-        """
-        if n_jobs is None:
-            n_jobs = mp.cpu_count()
+            if logger:
+                logger.log_error(error_msg)
+                logger.log_experiment_end("Simulation failed with error")
             
-        print("Using divide-and-conquer evaluation...")
-        start_time = time.time()
-        
-        function_config = self.get_function_config()
-        
-        def evaluate_subset(subset_1, subset_2, depth=0):
-            """Recursively evaluate a subset of contracts."""
-            subset_size = len(subset_1) * len(subset_2)
-            
-            # Base case: if subset is small enough or max depth reached, evaluate directly
-            if subset_size <= 1000 or depth >= max_depth:
-                pairs = [(c1, c2) for c1 in subset_1 for c2 in subset_2]
-                args_list = [(c1, c2, V0, mu, self.params, function_config) for c1, c2 in pairs]
-                
-                with mp.Pool(processes=min(n_jobs, len(args_list))) as pool:
-                    results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
-                
-                return self.pareto_optimal_solutions(results)
-            
-            # Recursive case: divide the problem
-            mid_1 = len(subset_1) // 2
-            mid_2 = len(subset_2) // 2
-            
-            # Create four quadrants
-            quadrants = [
-                (subset_1[:mid_1], subset_2[:mid_2]),
-                (subset_1[:mid_1], subset_2[mid_2:]),
-                (subset_1[mid_1:], subset_2[:mid_2]),
-                (subset_1[mid_1:], subset_2[mid_2:])
-            ]
-            
-            # Evaluate quadrants in parallel using multiprocessing
-            with mp.Pool(processes=min(n_jobs, 4)) as pool:
-                quadrant_results = pool.starmap(
-                    lambda s1, s2: evaluate_subset(s1, s2, depth + 1),
-                    quadrants
-                )
-            
-            # Merge Pareto frontiers from all quadrants
-            all_results = []
-            for quad_pareto in quadrant_results:
-                all_results.extend(quad_pareto)
-            
-            return self.pareto_optimal_solutions(all_results)
-        
-        # Sort contracts by profit for better partitioning
-        contracts_1_sorted = sorted(contracts_1, key=lambda x: x.get('expected_profit', 0), reverse=True)
-        contracts_2_sorted = sorted(contracts_2, key=lambda x: x.get('expected_profit', 0), reverse=True)
-        
-        pareto = evaluate_subset(contracts_1_sorted, contracts_2_sorted)
-        
-        end_time = time.time()
-        print(f"Divide-and-conquer evaluation completed in {end_time - start_time:.2f} seconds")
-        
-        return pareto
-
-    def _prefilter_contracts(self, contracts):
-        """
-        Pre-filter contracts to remove clearly dominated ones.
-        
-        Args:
-            contracts: List of contract dictionaries
-            
-        Returns:
-            List of filtered contracts
-        """
-        if not contracts:
-            return contracts
-        
-        # Extract key metrics for filtering
-        profits = [c.get('expected_profit', 0) for c in contracts]
-        premiums = [c.get('phi1', 0) for c in contracts]
-        
-        # Filter out contracts with very low profits (bottom 25%)
-        profit_threshold = np.percentile(profits, 25)
-        
-        # Filter out contracts with extreme premiums (top/bottom 5%)
-        premium_low = np.percentile(premiums, 5)
-        premium_high = np.percentile(premiums, 95)
-        
-        filtered = []
-        for i, contract in enumerate(contracts):
-            profit = profits[i]
-            premium = premiums[i]
-            
-            # Keep contract if it meets basic criteria
-            if (profit >= profit_threshold and 
-                premium_low <= premium <= premium_high):
-                filtered.append(contract)
-        
-        # Always keep at least top 50% by profit to avoid over-filtering
-        if len(filtered) < len(contracts) * 0.5:
-            contracts_by_profit = sorted(contracts, key=lambda x: x.get('expected_profit', 0), reverse=True)
-            filtered = contracts_by_profit[:len(contracts) // 2]
-        
-        return filtered
-
-    def _select_contract_subset(self, contracts_1, contracts_2, existing_pareto, subset_size):
-        """
-        Select a subset of contracts for evaluation based on existing Pareto solutions.
-        
-        Args:
-            contracts_1: All contracts for insurer 1
-            contracts_2: All contracts for insurer 2
-            existing_pareto: Existing Pareto optimal solutions
-            subset_size: Target subset size
-            
-        Returns:
-            Tuple of (subset_1, subset_2)
-        """
-        if not existing_pareto:
-            # First iteration: random selection
-            import random
-            subset_1 = random.sample(contracts_1, min(subset_size // 2, len(contracts_1)))
-            subset_2 = random.sample(contracts_2, min(subset_size // 2, len(contracts_2)))
-            return subset_1, subset_2
-        
-        # Subsequent iterations: focus on promising regions
-        # Extract features from existing Pareto solutions
-        pareto_features_1 = self._extract_contract_features([p['insurer1'] for p in existing_pareto])
-        pareto_features_2 = self._extract_contract_features([p['insurer2'] for p in existing_pareto])
-        
-        # Find contracts similar to Pareto solutions
-        subset_1 = self._find_similar_contracts(contracts_1, pareto_features_1, subset_size // 2)
-        subset_2 = self._find_similar_contracts(contracts_2, pareto_features_2, subset_size // 2)
-        
-        return subset_1, subset_2
-
-    def _extract_contract_features(self, contracts):
-        """
-        Extract numerical features from contracts for similarity analysis.
-        
-        Args:
-            contracts: List of contract dictionaries
-            
-        Returns:
-            Array of features
-        """
-        features = []
-        for contract in contracts:
-            # Extract key features: premium, average indemnity, action schedule statistics
-            phi1 = contract['phi1']
-            phi2_mean = np.mean(contract['phi2'])
-            phi2_std = np.std(contract['phi2'])
-            a_mean = np.mean(contract['a_schedule'])
-            a_std = np.std(contract['a_schedule'])
-            
-            features.append([phi1, phi2_mean, phi2_std, a_mean, a_std])
-        
-        return np.array(features)
-
-    def _find_similar_contracts(self, contracts, pareto_features, n_contracts):
-        """
-        Find contracts similar to Pareto solutions using feature similarity.
-        
-        Args:
-            contracts: All available contracts
-            pareto_features: Features of Pareto solutions
-            n_contracts: Number of contracts to select
-            
-        Returns:
-            List of selected contracts
-        """
-        if len(contracts) <= n_contracts:
-            return contracts
-        
-        # Extract features from all contracts
-        all_features = self._extract_contract_features(contracts)
-        
-        # Calculate similarity to Pareto solutions
-        similarities = []
-        for i, contract_features in enumerate(all_features):
-            # Minimum distance to any Pareto solution
-            distances = np.linalg.norm(pareto_features - contract_features, axis=1)
-            min_distance = np.min(distances)
-            similarities.append((min_distance, i))
-        
-        # Select contracts with highest similarity (lowest distance)
-        similarities.sort()
-        selected_indices = [idx for _, idx in similarities[:n_contracts]]
-        
-        return [contracts[i] for i in selected_indices]
-
-    def _evaluate_contract_subset_parallel(self, subset_1, subset_2, V0, mu, 
-                                         function_config, n_jobs, evaluated_pairs):
-        """
-        Evaluate a subset of contract pairs in parallel with early termination.
-        
-        Args:
-            subset_1: Subset of contracts for insurer 1
-            subset_2: Subset of contracts for insurer 2
-            V0: Reservation utility grid
-            mu: Logit scale parameter
-            function_config: Function configuration
-            n_jobs: Number of parallel jobs
-            evaluated_pairs: Set of already evaluated pairs (for tracking)
-            
-        Returns:
-            List of evaluation results
-        """
-        # Prepare arguments for parallel processing
-        args_list = []
-        for c1 in subset_1:
-            for c2 in subset_2:
-                # Create unique identifier for this pair
-                pair_id = (id(c1), id(c2))
-                if pair_id not in evaluated_pairs:
-                    args = (c1, c2, V0, mu, self.params, function_config)
-                    args_list.append(args)
-                    evaluated_pairs.add(pair_id)
-        
-        if not args_list:
-            return []
-        
-        # Use multiprocessing to process contract pairs in parallel
-        with mp.Pool(processes=n_jobs) as pool:
-            results = pool.map(DuopolySolver._process_contract_pair_parallel_static, args_list)
-        
-        return results
-
-    def _merge_pareto_solutions(self, existing_pareto, new_pareto):
-        """
-        Merge new Pareto solutions with existing ones, removing dominated solutions.
-        
-        Args:
-            existing_pareto: Existing Pareto optimal solutions
-            new_pareto: New Pareto optimal solutions
-            
-        Returns:
-            Merged list of Pareto optimal solutions
-        """
-        if not existing_pareto:
-            return new_pareto
-        
-        if not new_pareto:
-            return existing_pareto
-        
-        # Combine all solutions
-        all_solutions = existing_pareto + new_pareto
-        
-        # Find Pareto optimal subset
-        return self.pareto_optimal_solutions(all_solutions)
-
-    def adaptive_grid_search(self, insurer_id, phi1_grid, phi2_grid, 
-                           initial_grid_size=10, max_refinements=3, 
-                           convergence_threshold=0.05, n_jobs=None):
-        """
-        Adaptive grid search that starts with coarse grid and refines promising regions.
-        
-        Args:
-            insurer_id: 1 or 2 for the insurer
-            phi1_grid: Original phi1 grid
-            phi2_grid: Original phi2 grid
-            initial_grid_size: Size of initial coarse grid
-            max_refinements: Maximum number of refinement iterations
-            convergence_threshold: Threshold for convergence
-            n_jobs: Number of parallel jobs
-            
-        Returns:
-            List of feasible contracts
-        """
-        if n_jobs is None:
-            n_jobs = mp.cpu_count()
-            
-        print(f"Starting adaptive grid search for insurer {insurer_id}...")
-        
-        # Start with coarse grid
-        phi1_coarse = np.linspace(phi1_grid[0], phi1_grid[-1], initial_grid_size)
-        phi2_coarse = self._create_coarse_phi2_grid(phi2_grid, initial_grid_size)
-        
-        all_contracts = []
-        
-        for refinement in range(max_refinements):
-            print(f"Refinement {refinement + 1}/{max_refinements}")
-            
-            # Evaluate current grid
-            current_contracts = self.grid_search_contracts_parallel(
-                insurer_id, phi1_coarse, phi2_coarse, n_jobs=n_jobs
-            )
-            
-            all_contracts.extend(current_contracts)
-            
-            if refinement == max_refinements - 1:
-                break
-            
-            # Identify promising regions for refinement
-            promising_regions = self._identify_promising_regions(current_contracts)
-            
-            if not promising_regions:
-                print("No promising regions found for refinement")
-                break
-            
-            # Refine grid in promising regions
-            phi1_coarse, phi2_coarse = self._refine_grid_in_regions(
-                phi1_coarse, phi2_coarse, promising_regions
-            )
-            
-            print(f"Refined grid: {len(phi1_coarse)} phi1 values, {len(phi2_coarse)} phi2 combinations")
-        
-        return all_contracts
-
-    def _create_coarse_phi2_grid(self, phi2_grid, grid_size):
-        """
-        Create a coarse phi2 grid for initial evaluation.
-        
-        Args:
-            phi2_grid: Original phi2 grid
-            grid_size: Target grid size
-            
-        Returns:
-            Coarse phi2 grid
-        """
-        if len(phi2_grid) <= grid_size:
-            return phi2_grid
-        
-        # Sample evenly from the original grid
-        indices = np.linspace(0, len(phi2_grid) - 1, grid_size, dtype=int)
-        return [phi2_grid[i] for i in indices]
-
-    def _identify_promising_regions(self, contracts):
-        """
-        Identify promising regions based on contract performance.
-        
-        Args:
-            contracts: List of evaluated contracts
-            
-        Returns:
-            List of promising regions (phi1 ranges, phi2 ranges)
-        """
-        if not contracts:
-            return []
-        
-        # Extract performance metrics
-        profits = [c['expected_profit'] for c in contracts]
-        phi1_values = [c['phi1'] for c in contracts]
-        
-        # Find regions with high profits
-        profit_threshold = np.percentile(profits, 75)  # Top 25%
-        
-        promising_phi1 = []
-        for i, profit in enumerate(profits):
-            if profit >= profit_threshold:
-                promising_phi1.append(phi1_values[i])
-        
-        if not promising_phi1:
-            return []
-        
-        # Group into regions
-        regions = []
-        phi1_min, phi1_max = min(promising_phi1), max(promising_phi1)
-        regions.append({'phi1_range': (phi1_min, phi1_max)})
-        
-        return regions
-
-    def _refine_grid_in_regions(self, phi1_coarse, phi2_coarse, promising_regions):
-        """
-        Refine the grid in promising regions.
-        
-        Args:
-            phi1_coarse: Current coarse phi1 grid
-            phi2_coarse: Current coarse phi2 grid
-            promising_regions: List of promising regions
-            
-        Returns:
-            Tuple of (refined_phi1, refined_phi2)
-        """
-        refined_phi1 = list(phi1_coarse)
-        refined_phi2 = list(phi2_coarse)
-        
-        for region in promising_regions:
-            phi1_min, phi1_max = region['phi1_range']
-            
-            # Add more points in the promising region
-            region_points = 5  # Number of additional points to add
-            for i in range(region_points):
-                phi1_new = phi1_min + (phi1_max - phi1_min) * (i + 1) / (region_points + 1)
-                if phi1_new not in refined_phi1:
-                    refined_phi1.append(phi1_new)
-        
-        # Sort phi1 grid
-        refined_phi1.sort()
-        
-        return refined_phi1, refined_phi2
-
-    @staticmethod
-    def pareto_optimal_solutions(results):
-        """
-        Given a list of contract pair results, return the Pareto optimal subset.
-        Each result should be a dict with 'profit_1' and 'profit_2'.
-        """
-        pareto = []
-        for i, res_i in enumerate(results):
-            dominated = False
-            for j, res_j in enumerate(results):
-                if i == j:
-                    continue
-                # res_j dominates res_i if both profits are >= and at least one is strictly >
-                if (res_j['profit_1'] >= res_i['profit_1'] and
-                    res_j['profit_2'] >= res_i['profit_2'] and
-                    (res_j['profit_1'] > res_i['profit_1'] or res_j['profit_2'] > res_i['profit_2'])):
-                    dominated = True
-                    break
-            if not dominated:
-                pareto.append(res_i)
-        return pareto
+            return False, None
 
 
 # ============================================================================
 # SIMULATION & PLOTTING
 # ============================================================================
 
-class InsuranceSimulator:
-    """Simulation and plotting class for the insurance model."""
+def plot_results(solver: DuopolySolver, solution: Dict, save_path: str = None):
+    """Comprehensive plotting of simulation results with multiple visualization types."""
+    if solution is None:
+        print("No solution to plot.")
+        return
+        
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     
-    def __init__(self, solver: DuopolySolver):
-        """
-        Initialize the simulator.
-        
-        Args:
-            solver: DuopolySolver instance
-        """
-        self.solver = solver
+    # Plot 1: Action schedules comparison
+    theta_grid = solver.theta_grid
+    a1 = solution['insurer1']['a_schedule']
+    a2 = solution['insurer2']['a_schedule']
     
-    def run_simulation(self) -> Dict:
-        """
-        Run the full simulation.
-        
-        Returns:
-            Dictionary containing simulation results
-        """
-        print("Starting duopoly insurance simulation...")
-        solution = self.solver.brute_force_duopoly()
-        print("Simulation completed!")
-        return solution
+    axes[0, 0].plot(theta_grid, a1, 'b-', linewidth=2, label='Insurer 1', marker='o')
+    axes[0, 0].plot(theta_grid, a2, 'r--', linewidth=2, label='Insurer 2', marker='s')
+    axes[0, 0].set_xlabel(r'$\theta$ (Risk Type)')
+    axes[0, 0].set_ylabel(r'$a^i(\theta)$ (Action Level)')
+    axes[0, 0].set_title('Optimal Action Schedules')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
     
-    def plot_results(self, solution: Dict, save_path: str = None):
-        """
-        Plot simulation results including choice probabilities.
-        
-        Args:
-            solution: Solution dictionary from solver
-            save_path: Optional path to save plots
-        """
-        # Use the first Pareto optimal solution for plotting
-        if isinstance(solution, list):
-            solution = solution[0]
-        fig, axes = plt.subplots(3, 2, figsize=(15, 18))
-        
-        # Plot 1: Action schedules
-        theta_grid = self.solver.theta_grid
-        a1 = solution['insurer1']['a_schedule']
-        a2 = solution['insurer2']['a_schedule']
-        
-        axes[0, 0].plot(theta_grid, a1, 'b-', linewidth=2, label='Insurer 1')
-        axes[0, 0].plot(theta_grid, a2, 'r--', linewidth=2, label='Insurer 2')
-        axes[0, 0].set_xlabel(r'$\theta$ (Risk Type)')
-        axes[0, 0].set_ylabel(r'$a^i(\theta)$ (Action Level)')
-        axes[0, 0].set_title('Optimal Action Schedules')
-        axes[0, 0].legend()
-        axes[0, 0].grid(True, alpha=0.3)
-        
-        # Plot 2: Premiums
-        phi1_1 = solution['insurer1']['phi1']
-        phi1_2 = solution['insurer2']['phi1']
-        
-        axes[0, 1].bar(['Insurer 1', 'Insurer 2'], [phi1_1, phi1_2], 
-                      color=['blue', 'red'], alpha=0.7)
-        axes[0, 1].set_ylabel(r'$\phi_1^i$ (Premium)')
-        axes[0, 1].set_title('Optimal Premiums')
-        axes[0, 1].grid(True, alpha=0.3)
-        
-        # Plot 3: Choice probabilities
-        P0 = solution['choice_probabilities']['P0']
-        P1 = solution['choice_probabilities']['P1']
-        P2 = solution['choice_probabilities']['P2']
-        
-        axes[1, 0].plot(theta_grid, P0, 'g-', linewidth=2, label='No Insurance')
-        axes[1, 0].plot(theta_grid, P1, 'b-', linewidth=2, label='Insurer 1')
-        axes[1, 0].plot(theta_grid, P2, 'r-', linewidth=2, label='Insurer 2')
-        axes[1, 0].set_xlabel(r'$\theta$ (Risk Type)')
-        axes[1, 0].set_ylabel('Choice Probability')
-        axes[1, 0].set_title('Choice Probabilities by Risk Type')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True, alpha=0.3)
-        
-        # Plot 4: Expected profits
-        profit_1 = solution['insurer1']['profit_1']
-        profit_2 = solution['insurer2']['profit_2']
-        
-        axes[1, 1].bar(['Insurer 1', 'Insurer 2'], [profit_1, profit_2], 
-                      color=['blue', 'red'], alpha=0.7)
-        axes[1, 1].set_ylabel('Expected Profit')
-        axes[1, 1].set_title('Expected Profits')
-        axes[1, 1].grid(True, alpha=0.3)
-        
-        # Plot 5: Discrete indemnity schedules
-        z_values = self.solver.z_values
-        phi2_1 = solution['insurer1']['phi2']
-        phi2_2 = solution['insurer2']['phi2']
-        
-        # Create bar plot for discrete indemnity values
-        x_pos = np.arange(len(z_values))
-        width = 0.35
-        
-        axes[2, 0].bar(x_pos - width/2, phi2_1, width, label='Insurer 1', alpha=0.7, color='blue')
-        axes[2, 0].bar(x_pos + width/2, phi2_2, width, label='Insurer 2', alpha=0.7, color='red')
-        axes[2, 0].set_xlabel('State Index')
-        axes[2, 0].set_ylabel(r'$\phi_2^i(z)$ (Indemnity)')
-        axes[2, 0].set_title('Discrete Indemnity Schedules')
-        axes[2, 0].set_xticks(x_pos)
-        axes[2, 0].set_xticklabels([f'z={z:.1f}' for z in z_values])
-        axes[2, 0].legend()
-        axes[2, 0].grid(True, alpha=0.3)
-        
-        # Plot 6: Utilities comparison
-        V0 = solution['utilities']['V0']
-        V1 = solution['utilities']['V1']
-        V2 = solution['utilities']['V2']
-        
-        axes[2, 1].plot(theta_grid, V0, 'g-', linewidth=2, label='No Insurance')
-        axes[2, 1].plot(theta_grid, V1, 'b-', linewidth=2, label='Insurer 1')
-        axes[2, 1].plot(theta_grid, V2, 'r-', linewidth=2, label='Insurer 2')
-        axes[2, 1].set_xlabel(r'$\theta$ (Risk Type)')
-        axes[2, 1].set_ylabel('Expected Utility')
-        axes[2, 1].set_title('Utilities by Risk Type')
-        axes[2, 1].legend()
-        axes[2, 1].grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+    # Plot 2: Premium comparison
+    phi1_1 = solution['insurer1']['phi1']
+    phi1_2 = solution['insurer2']['phi1']
     
-    def plot_discrete_analysis(self, solution: Dict, save_path: str = None):
-        """
-        Additional plots specifically for discrete state space analysis.
-        
-        Args:
-            solution: Solution dictionary from solver
-            save_path: Optional path to save plots
-        """
-        # Use the first Pareto optimal solution for plotting
-        if isinstance(solution, list):
-            solution = solution[0]
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        
-        z_values = self.solver.z_values
-        z_probs = self.solver.z_probs
-        phi2_1 = solution['insurer1']['phi2']
-        phi2_2 = solution['insurer2']['phi2']
-        
-        # Plot 1: State probabilities
-        axes[0, 0].bar(range(len(z_values)), z_probs, alpha=0.7, color='green')
-        axes[0, 0].set_xlabel('State Index')
-        axes[0, 0].set_ylabel('Probability')
-        axes[0, 0].set_title('State Space Probabilities')
-        axes[0, 0].set_xticks(range(len(z_values)))
-        axes[0, 0].set_xticklabels([f'z={z:.1f}' for z in z_values])
-        axes[0, 0].grid(True, alpha=0.3)
-        
-        # Plot 2: Indemnity vs State Value
-        axes[0, 1].scatter(z_values, phi2_1, s=100, alpha=0.7, label='Insurer 1', color='blue')
-        axes[0, 1].scatter(z_values, phi2_2, s=100, alpha=0.7, label='Insurer 2', color='red')
-        axes[0, 1].set_xlabel('State Value (z)')
-        axes[0, 1].set_ylabel('Indemnity')
-        axes[0, 1].set_title('Indemnity vs State Value')
-        axes[0, 1].legend()
-        axes[0, 1].grid(True, alpha=0.3)
-        
-        # Plot 3: Expected indemnity by risk type
-        theta_grid = self.solver.theta_grid
-        a1 = solution['insurer1']['a_schedule']
-        a2 = solution['insurer2']['a_schedule']
-        
-        expected_indemnity_1 = []
-        expected_indemnity_2 = []
-        
-        for i, theta in enumerate(theta_grid):
-            # Get state space for this action level
-            state_space_1 = self.solver.functions.f(a1[i], self.solver.delta1, self.solver.params)
-            _, z_probs_1 = state_space_1.get_all_states()
-            
-            state_space_2 = self.solver.functions.f(a2[i], self.solver.delta2, self.solver.params)
-            _, z_probs_2 = state_space_2.get_all_states()
-            
-            # Expected indemnity
-            exp_ind_1 = np.sum(phi2_1 * z_probs_1)
-            exp_ind_2 = np.sum(phi2_2 * z_probs_2)
-            
-            expected_indemnity_1.append(exp_ind_1)
-            expected_indemnity_2.append(exp_ind_2)
-        
-        axes[1, 0].plot(theta_grid, expected_indemnity_1, 'b-', linewidth=2, label='Insurer 1')
-        axes[1, 0].plot(theta_grid, expected_indemnity_2, 'r--', linewidth=2, label='Insurer 2')
-        axes[1, 0].set_xlabel(r'$\theta$ (Risk Type)')
-        axes[1, 0].set_ylabel('Expected Indemnity')
-        axes[1, 0].set_title('Expected Indemnity by Risk Type')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True, alpha=0.3)
-        
-        # Plot 4: Contract comparison
-        contract_data = [
-            ['Premium', solution['insurer1']['phi1'], solution['insurer2']['phi1']],
-            ['Avg Action', np.mean(a1), np.mean(a2)],
-            ['Avg Indemnity', np.mean(phi2_1), np.mean(phi2_2)],
-            ['Max Indemnity', np.max(phi2_1), np.max(phi2_2)]
-        ]
-        
-        labels = [row[0] for row in contract_data]
-        insurer1_vals = [row[1] for row in contract_data]
-        insurer2_vals = [row[2] for row in contract_data]
-        
-        x_pos = np.arange(len(labels))
-        width = 0.35
-        
-        axes[1, 1].bar(x_pos - width/2, insurer1_vals, width, label='Insurer 1', alpha=0.7, color='blue')
-        axes[1, 1].bar(x_pos + width/2, insurer2_vals, width, label='Insurer 2', alpha=0.7, color='red')
-        axes[1, 1].set_xlabel('Contract Features')
-        axes[1, 1].set_ylabel('Value')
-        axes[1, 1].set_title('Contract Comparison')
-        axes[1, 1].set_xticks(x_pos)
-        axes[1, 1].set_xticklabels(labels)
-        axes[1, 1].legend()
-        axes[1, 1].grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+    bars = axes[0, 1].bar(['Insurer 1', 'Insurer 2'], [phi1_1, phi1_2], 
+                         color=['blue', 'red'], alpha=0.7)
+    axes[0, 1].set_ylabel(r'$\phi_1^i$ (Premium)')
+    axes[0, 1].set_title('Optimal Premiums')
+    axes[0, 1].grid(True, alpha=0.3)
     
-    def sensitivity_analysis(self, param_name: str, param_range: List[float], 
-                           save_path: str = None):
-        """
-        Perform sensitivity analysis by varying a parameter.
+    # Add value labels on bars
+    for bar in bars:
+        height = bar.get_height()
+        axes[0, 1].text(bar.get_x() + bar.get_width()/2., height,
+                       f'{height:.2f}', ha='center', va='bottom')
+    
+    # Plot 3: Indemnity schedules
+    z_values = solver.z_values
+    phi2_1 = solution['insurer1']['phi2']
+    phi2_2 = solution['insurer2']['phi2']
+    
+    x_pos = np.arange(len(z_values))
+    width = 0.35
+    
+    # Indemnity schedules now occupy the first subplot of the second row
+    axes[1, 0].bar(x_pos - width/2, phi2_1, width, label='Insurer 1', alpha=0.7, color='blue')
+    axes[1, 0].bar(x_pos + width/2, phi2_2, width, label='Insurer 2', alpha=0.7, color='red')
+    axes[1, 0].set_xlabel('State Index')
+    axes[1, 0].set_ylabel(r'$\phi_2^i(z)$ (Indemnity)')
+    axes[1, 0].set_title('Discrete Indemnity Schedules')
+    axes[1, 0].set_xticks(x_pos)
+    axes[1, 0].set_xticklabels([f'z={z:.1f}' for z in z_values])
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # Plot 4: Expected utilities for different risk types
+    V0_list = []
+    V1_list = []
+    V2_list = []
+    for theta in theta_grid:
+        # Compute expected utilities for each risk type using complete utility calculation
+        a1_theta = np.interp(theta, theta_grid, a1)
+        a2_theta = np.interp(theta, theta_grid, a2)
         
-        Args:
-            param_name: Name of parameter to vary (required)
-            param_range: List of parameter values to test (required)
-            save_path: Optional path to save plots
-        """
-        if param_name is None:
-            raise ValueError("param_name is required")
-        if param_range is None:
-            raise ValueError("param_range is required")
-        if param_name not in self.solver.params:
-            raise ValueError(f"Parameter '{param_name}' not found in solver parameters")
-        
-        results = []
-        
-        for param_val in param_range:
-            # Update parameter
-            original_val = self.solver.params[param_name]
-            self.solver.params[param_name] = param_val
-            
-            # Solve
-            solution = self.solver.brute_force_duopoly()
-            results.append({
-                'param_val': param_val,
-                'premium_1': solution['insurer1']['phi1'],
-                'premium_2': solution['insurer2']['phi1'],
-                'avg_action_1': np.mean(solution['insurer1']['a_schedule']),
-                'avg_action_2': np.mean(solution['insurer2']['a_schedule']),
-                'avg_indemnity_1': np.mean(solution['insurer1']['phi2']),
-                'avg_indemnity_2': np.mean(solution['insurer2']['phi2'])
-            })
-            
-            # Restore original parameter
-            self.solver.params[param_name] = original_val
-        
-        # Plot sensitivity results
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        
-        param_vals = [r['param_val'] for r in results]
-        
-        axes[0, 0].plot(param_vals, [r['premium_1'] for r in results], 'b-', linewidth=2, label='Insurer 1')
-        axes[0, 0].plot(param_vals, [r['premium_2'] for r in results], 'r--', linewidth=2, label='Insurer 2')
-        axes[0, 0].set_xlabel(param_name)
-        axes[0, 0].set_ylabel('Premium')
-        axes[0, 0].set_title(f'Premium Sensitivity to {param_name}')
-        axes[0, 0].legend()
-        axes[0, 0].grid(True, alpha=0.3)
-        
-        axes[0, 1].plot(param_vals, [r['avg_action_1'] for r in results], 'b-', linewidth=2, label='Insurer 1')
-        axes[0, 1].plot(param_vals, [r['avg_action_2'] for r in results], 'r--', linewidth=2, label='Insurer 2')
-        axes[0, 1].set_xlabel(param_name)
-        axes[0, 1].set_ylabel('Average Action Level')
-        axes[0, 1].set_title(f'Action Level Sensitivity to {param_name}')
-        axes[0, 1].legend()
-        axes[0, 1].grid(True, alpha=0.3)
-        
-        axes[1, 0].plot(param_vals, [r['avg_indemnity_1'] for r in results], 'b-', linewidth=2, label='Insurer 1')
-        axes[1, 0].plot(param_vals, [r['avg_indemnity_2'] for r in results], 'r--', linewidth=2, label='Insurer 2')
-        axes[1, 0].set_xlabel(param_name)
-        axes[1, 0].set_ylabel('Average Indemnity')
-        axes[1, 0].set_title(f'Indemnity Sensitivity to {param_name}')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
+        V0 = solver.compute_reservation_utility(theta)
+        V1 = solver.compute_expected_utility(a1_theta, phi1_1, phi2_1, solver.delta1, theta)
+        V2 = solver.compute_expected_utility(a2_theta, phi1_2, phi2_2, solver.delta2, theta)
+        V0_list.append(V0)
+        V1_list.append(V1)
+        V2_list.append(V2)
+    
+    axes[1, 1].plot(theta_grid, V0_list, 'k-', linewidth=2, label='No Insurance', marker='^')
+    axes[1, 1].plot(theta_grid, V1_list, 'b-', linewidth=2, label='Insurer 1', marker='o')
+    axes[1, 1].plot(theta_grid, V2_list, 'r--', linewidth=2, label='Insurer 2', marker='s')
+    axes[1, 1].set_xlabel(r'$\theta$ (Risk Type)')
+    axes[1, 1].set_ylabel('Utility')
+    axes[1, 1].set_title('Market Coverage Analysis')
+    axes[1, 1].legend()
+    axes[1, 1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to: {save_path}")
+    
+    plt.show()
 
 
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================
 
-def run_simulation(function_configs=None, include_sensitivity=True, save_plots=True, params=None, logger: SimulationLogger = None, use_parallel=True, n_jobs=None):
-    """
-    Unified simulation function that can handle single or multiple function configurations.
-    
-    Args:
-        function_configs: List of function configurations to test. 
-                         Example: {
-                             'name': 'basic_binary_states',
-                             'p': 'logistic',
-                             'm': 'linear',
-                             'e': 'power',
-                             'u': 'exponential',
-                             'f': 'binary_states',
-                             'c': 'linear'
-                         }
-        include_sensitivity: Whether to run sensitivity analysis
-        save_plots: Whether to save plots to files
-        params: Dictionary containing all required parameters. Must include:
-               - W: Initial wealth
-               - s: Accident severity
-               - N: Number of customers
-               - delta1: Insurer 1 monitoring level
-               - delta2: Insurer 2 monitoring level
-               - theta_min: Minimum risk type
-               - theta_max: Maximum risk type
-               - n_theta: Number of risk types
-               - a_min: Minimum action level (default: 0.0)
-               - a_max: Maximum action level (default: 1.0)
-               - p_alpha: Parameter for no accident probability function
-               - p_beta: Parameter for no accident probability function
-               - m_gamma: Parameter for monitoring cost function
-               - e_kappa: Parameter for action cost function
-               - e_power: Parameter for action cost function
-               - u_rho: Parameter for utility function
-               - u_max: Maximum value parameter for exponential utility function (upper limit)
-               - f_p_base: Parameter for state density function
-               - c_lambda: Parameter for insurer cost function
-               - xi_scale: Scale parameter for logit choice model
-        logger: Optional SimulationLogger instance for logging
-        use_parallel: Whether to use parallel processing (default: True)
-        n_jobs: Number of parallel jobs (default: number of CPU cores)
-    Returns:
-        Dictionary containing simulation results
-    """
-    # Validate required parameters
-    if params is None:
-        raise ValueError("params dictionary is required and cannot be None")
-    
-    # Check action bounds (optional parameters with defaults)
-    if 'a_min' not in params:
-        params['a_min'] = 0.0
-    if 'a_max' not in params:
-        params['a_max'] = 1.0
-    
-    # Validate action bounds
-    if params['a_min'] >= params['a_max']:
-        raise ValueError("a_min must be less than a_max")
-    if params['a_min'] < 0:
-        raise ValueError("a_min must be non-negative")
-    
-    if function_configs is None:
-        raise ValueError("function_configs is required and cannot be None")
-
-    results = {}
-    # --- Initialize logger if not provided ---
-    if logger is None:
-        logger = SimulationLogger(experiment_name="duopoly_experiment")
-    logger.log_experiment_start("Duopoly insurance simulation")
-    logger.log_simulation_settings({
-        'function_configs': function_configs,
-        'include_sensitivity': include_sensitivity,
-        'save_plots': save_plots,
-        'use_parallel': use_parallel,
-        'n_jobs': n_jobs
-    })
-    logger.log_parameters(params)
-    # ------------------------------------------------------------------
-    # Ensure files from different simulation runs are stored separately.
-    # Each run gets its own sub-directory named with the logger's
-    # experiment name and a timestamp so that earlier results are never
-    # overwritten.
-    # ------------------------------------------------------------------
-    timestamp_str = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = Path('outputs') / f"{logger.experiment_name}_{timestamp_str}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for config in function_configs:
-        print(f"\nRunning simulation with {config['name']} configuration...")
-        # Validate that all required function types are specified
-        required_keys = ['name', 'p', 'm', 'e', 'u', 'f', 'c']
-        missing_keys = [key for key in required_keys if key not in config]
-        if missing_keys:
-            raise ValueError(f"Function configuration '{config['name']}' is missing required keys: {missing_keys}")
-        
-        # Create function configuration dictionary (remove 'name' as it's not needed by FlexibleFunctions)
-        function_config = {key: config[key] for key in ['p', 'm', 'e', 'u', 'f', 'c']}
-        functions = FlexibleFunctions(function_config)
-        solver = DuopolySolver(functions, params)
-        
-        # Choose between parallel and sequential grid search
-        if use_parallel:
-            print("Using parallel brute-force grid search for contracts...")
-            pareto_solutions = solver.brute_force_duopoly(logger=logger, n_jobs=n_jobs)
-        else:
-            print("Using sequential brute-force grid search for contracts...")
-            pareto_solutions = solver.brute_force_duopoly(logger=logger)
-            
-        results[config['name']] = pareto_solutions
-        if save_plots:
-            # Only plot the first Pareto solution for illustration
-            if pareto_solutions:
-                solution = pareto_solutions[0]
-                simulator = InsuranceSimulator(solver)
-                simulator.plot_results(solution, str(output_dir / f'{config["name"]}_results.png'))
-                simulator.plot_discrete_analysis(solution, str(output_dir / f'{config["name"]}_analysis.png'))
-        # Log duopoly solution
-        if pareto_solutions:
-            logger.log_duopoly_solution(pareto_solutions[0], config['name'])
-        else:
-            logger.log_warning(f"No Pareto solutions found for configuration: {config['name']}")
-        # Sensitivity analysis can be skipped or adapted for grid search
-    print("Simulation completed!")
-    logger.log_experiment_end("Simulation completed successfully")
-    logger.print_summary()
-    return results
-
-
 if __name__ == "__main__":
-    # Example: Multiple state spaces with all required parameters
-    print("\n" + "=" * 60)
-    print("EXAMPLE")
-    print("=" * 60)
-    required_params = {
-        'W': 5000.0,           # Initial wealth
-        's': 800.0,            # Accident severity
-        'N': 10000,             # Number of customers
-        'delta1': 1.0,          # Insurer 1 monitoring level
-        'delta2': 0.5,          # Insurer 2 monitoring level
-        'theta_min': 0.5,       # Minimum risk type
-        'theta_max': 2.0,       # Maximum risk type
-        'n_theta': 20,          # Number of risk types
-        'a_min': 0.0,           # Minimum action level
-        'a_max': 1.0,           # Maximum action level
-        'p_alpha': 0,           # Parameter for no accident probability function
-        'p_beta': 1.0,          # Parameter for no accident probability function
-        'm_gamma': 120,         # Parameter for monitoring cost function
-        'e_kappa': 80,          # Parameter for action cost function
-        'e_power': 2.0,         # Parameter for action cost function
-        'u_rho': 0.1,           # Parameter for utility function
-        'u_max': 2*10e3,        # Maximum value parameter for exponential utility function (upper limit)
-        'f_p_base': 0.5,        # Parameter for state density function
-        'c_lambda': 30,         # Parameter for insurer cost function
-        'xi_scale': 500.0,      # Scale parameter for logit choice model
-        # Grid search parameters (smaller for faster testing)
-        'n_phi1_grid': 10,      # Number of premium grid points
-        'n_phi2_grid': 10       # Number of indemnity grid points
+    # Example parameters
+    params = {
+        'W': 100.0,            # Initial wealth (reduced from 1000.0)
+        's': 30.0,             # Accident severity (reduced from 300.0)
+        'N': 100,              # Number of customers
+        'delta1': 0.8,         # Insurer 1 monitoring level
+        'delta2': 0.6,         # Insurer 2 monitoring level
+        'theta_min': 0.5,      # Minimum risk type
+        'theta_max': 1.5,      # Maximum risk type
+        'n_theta': 5,          # Number of risk types
+        'a_min': 0.0,          # Minimum action level
+        'a_max': 1.0,          # Maximum action level
+        'mu': 100.0,             # Logit model scale parameter
+        'p_alpha': 0.0,        # No accident probability parameter
+        'p_beta': 1.0,         # No accident probability parameter
+        'e_kappa': 20.0,       # Action cost parameter (reduced from 200.0)
+        'e_power': 2.0,        # Action cost power
+        'f_p_base': 0.5,       # State density parameter
+        'c_lambda': 1.0,       # Insurer cost parameter (reduced from 10.0)
+        'm_gamma': 2.0,        # Monitoring cost parameter (reduced from 20.0)
+        'u_rho': 0.1,          # Utility parameter (increased from 0.05 for better scaling)
+        'u_max': 100.0,        # Utility parameter (reduced from 1000.0)
     }
     
-    # Initialize logger
-    logger = SimulationLogger(experiment_name="duopoly_example_run")
-    
-    # Run simulation with parallel processing
-    print("\n" + "=" * 60)
-    print("RUNNING SIMULATION WITH PARALLEL PROCESSING")
-    print("=" * 60)
-    
-    # Example of multiple function configurations - user must specify all function types
-    function_configs = [
-        {
-            'name': 'basic_binary_states',
-            'p': 'logistic',
-            'm': 'linear', 
-            'e': 'power',
-            'u': 'exponential',
-            'f': 'binary_states',
-            'c': 'linear'
-        }
-    ]
-    
-    results = run_simulation(
-        function_configs=function_configs,
-        include_sensitivity=False,
-        params=required_params,
-        logger=logger,
-        use_parallel=True,
-        n_jobs=None  # Use all available cores
+    print("="*60)
+    print("DUOPOLY INSURANCE MODEL DEMONSTRATION")
+    print("="*60)
+
+    # Create logger for analysis
+    from logger import SimulationLogger
+    logger = SimulationLogger(
+        experiment_name="duopoly_kkt_demo",
+        log_level="INFO"
     )
     
-    print("\n" + "=" * 60)
-    print("Simulations completed! Check the generated plots and logs.")
-    print("=" * 60)
+    # Create function configuration
+    function_config = {
+        'p': 'linear',
+        'm': 'linear',
+        'e': 'power',
+        'u': 'exponential',
+        'f': 'binary_states',
+        'c': 'linear'
+    }
+    
+    # Create solver with the function configuration
+    functions = FlexibleFunctions(function_config)
+    solver = DuopolySolver(functions, params)
+    
+    # Run simulation using the simplified run method
+    success, solution = solver.run(
+        solver_name='ipopt',
+        verbose=False,
+        save_plots=True,
+        logger=logger
+    )
+    
+    if success:
+        print("✅ KKT-based simulation completed!")
+        print(f"Solve time: {solution.get('solve_time', 'N/A')} seconds")
+    else:
+        print("❌ KKT-based simulation failed!")
+    
+    print("\n" + "="*60)
+    print("DEMONSTRATION COMPLETED")
+    print("="*60)
