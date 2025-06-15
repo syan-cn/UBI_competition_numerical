@@ -678,7 +678,7 @@ class DuopolySolver:
             return -expected_utility
         
         result = minimize(objective, x0=(self.a_min + self.a_max)/2, bounds=[(self.a_min, self.a_max)])
-        return -result.fun
+        return 70#-result.fun
     
     def compute_expected_utility(self, a: float, phi1: float, phi2_values: np.ndarray, delta: float, theta: float) -> float:
         """
@@ -949,8 +949,6 @@ class DuopolySolver:
             u_accident = self.functions.u(self.W - phi1 + phi2_val - self.s, self.params)
             integral_2 += u_accident * df_da[i]
         
-        # Complete G function:
-        # G(θ) = ∂p/∂a [u(W-φ₁) - integral_1] + (1-p) * integral_2 - ∂e/∂a
         g_value = dp_da * (utility_no_accident - integral_1) + p_accident * integral_2 - de_da
         
         return g_value
@@ -960,8 +958,8 @@ class DuopolySolver:
         Compute derivative of G(θ) with respect to φ₁.
         
         Mathematical formulation:
-        ∂G/∂φ₁ = ∂p/∂a [-u'(W-φ₁) + ∫ u'(W-φ₁+φ₂(z)-s) f(z|a,δ) dz] 
-                  + (1-p) ∫ u'(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz
+        ∂G/∂φ₁ = - ∂p/∂a [u'(W-φ₁) - ∫ u'(W-φ₁+φ₂(z)-s) f(z|a,δ) dz] 
+                  - (1-p) ∫ u'(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz
         """
         dp_da = self.functions.dp_da(a, self.params)
         p_accident = 1 - self.functions.p(a, self.params)
@@ -972,25 +970,23 @@ class DuopolySolver:
         df_da = self.functions.df_da(a, delta, self.params)
         
         # Marginal utility derivatives
-        du_dphi1_no_accident = -self.functions.du_dx(self.W - phi1, self.params)  # -u'(W-φ₁)
+        du_no_accident = self.functions.du_dx(self.W - phi1, self.params)  # u'(W-φ₁)
         
         # First integral: ∫ u'(W-φ₁+φ₂(z)-s) f(z|a,δ) dz
         integral_marginal_1 = 0.0
         for i, z in enumerate(z_values):
             phi2_val = phi2_values[i]
-            du_dphi1_accident = -self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)  # -u'(W-φ₁+φ₂-s)
-            integral_marginal_1 += du_dphi1_accident * z_probs[i]
+            du_accident = self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)  # u'(W-φ₁+φ₂-s)
+            integral_marginal_1 += du_accident * z_probs[i]
         
         # Second integral: ∫ u'(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz
         integral_marginal_2 = 0.0
         for i, z in enumerate(z_values):
             phi2_val = phi2_values[i]
-            du_dphi1_accident = -self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)  # -u'(W-φ₁+φ₂-s)
-            integral_marginal_2 += du_dphi1_accident * df_da[i]
+            du_accident = self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)  # u'(W-φ₁+φ₂-s)
+            integral_marginal_2 += du_accident * df_da[i]
         
-        # Complete derivative:
-        # ∂G/∂φ₁ = ∂p/∂a [-u'(W-φ₁) - integral_marginal_1] + (1-p) * integral_marginal_2
-        dG_dphi1 = dp_da * (du_dphi1_no_accident - integral_marginal_1) + p_accident * integral_marginal_2
+        dG_dphi1 = -dp_da * (du_no_accident - integral_marginal_1) - p_accident * integral_marginal_2
         
         return dG_dphi1
     
@@ -999,7 +995,7 @@ class DuopolySolver:
         Compute derivative of G(θ) with respect to φ₂(z).
         
         Mathematical formulation:
-        ∂G/∂φ₂(z) = ∂p/∂a [-u'(W-φ₁+φ₂(z)-s) f(z|a,δ)] 
+        ∂G/∂φ₂(z) = - ∂p/∂a [u'(W-φ₁+φ₂(z)-s) f(z|a,δ)] 
                      + (1-p) u'(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a
         """
         dp_da = self.functions.dp_da(a, self.params)
@@ -1014,15 +1010,13 @@ class DuopolySolver:
         phi2_val = phi2_values[z_idx]
         
         # Marginal utility at accident state: u'(W-φ₁+φ₂(z)-s)
-        du_dphi2 = self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)
+        du_accident = self.functions.du_dx(self.W - phi1 + phi2_val - self.s, self.params)
         
         # State probability and its derivative
         f_z = z_probs[z_idx]
         df_da_z = df_da[z_idx]
         
-        # Complete derivative:
-        # ∂G/∂φ₂(z) = ∂p/∂a [-u'(W-φ₁+φ₂(z)-s) f(z|a,δ)] + (1-p) u'(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a
-        dG_dphi2 = dp_da * (-du_dphi2 * f_z) + p_accident * du_dphi2 * df_da_z
+        dG_dphi2 = - dp_da * (du_accident * f_z) + p_accident * du_accident * df_da_z
         
         return dG_dphi2
     
@@ -1034,15 +1028,13 @@ class DuopolySolver:
         
         Mathematical formulation (expanded from G function):
         ∂G/∂a = ∂²p/∂a² [u(W-φ₁) - ∫ u(W-φ₁+φ₂(z)-s) f(z|a,δ) dz]
-                + ∂p/∂a [- ∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
-                - ∂p/∂a [∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
+                - 2 * ∂p/∂a [∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
                 + (1-p) ∫ u(W-φ₁+φ₂(z)-s) ∂²f(z|a,δ)/∂a² dz
                 - ∂²e/∂a²
         """
         # Get all necessary derivatives
         dp_da = self.functions.dp_da(a, self.params)
         d2p_da2 = self.functions.d2p_da2(a, self.params)
-        de_da = self.functions.de_da(a, theta, self.params)
         d2e_da2 = self.functions.d2e_da2(a, theta, self.params)
         
         p_no_accident = self.functions.p(a, self.params)
@@ -1073,30 +1065,20 @@ class DuopolySolver:
             integral_u_df_da += u_accident * df_da[i]
             integral_u_d2f_da2 += u_accident * d2f_da2[i]
         
-        # Complete second-order derivative according to mathematical model:
-        # ∂G/∂a = ∂²p/∂a² [u(W-φ₁) - ∫ u(W-φ₁+φ₂(z)-s) f(z|a,δ) dz]
-        #         + ∂p/∂a [-∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
-        #         - ∂p/∂a [∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
-        #         + (1-p) ∫ u(W-φ₁+φ₂(z)-s) ∂²f(z|a,δ)/∂a² dz
-        #         - ∂²e/∂a²
-        
         # Term 1: ∂²p/∂a² [u(W-φ₁) - ∫ u(W-φ₁+φ₂(z)-s) f(z|a,δ) dz]
         term1 = d2p_da2 * (utility_no_accident - integral_u_f)
         
-        # Term 2: ∂p/∂a [-∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
-        term2a = dp_da * (-integral_u_df_da)
+        # Term 2: -2 * ∂p/∂a [∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz]
+        term2 = -2 * dp_da * integral_u_df_da
         
-        # Term 3: -∂p/∂a [∫ u(W-φ₁+φ₂(z)-s) ∂f(z|a,δ)/∂a dz] (duplicate term from expansion)
-        term2b = -dp_da * integral_u_df_da
-        
-        # Term 4: (1-p) ∫ u(W-φ₁+φ₂(z)-s) ∂²f(z|a,δ)/∂a² dz
+        # Term 3: (1-p) ∫ u(W-φ₁+φ₂(z)-s) ∂²f(z|a,δ)/∂a² dz
         term3 = p_accident * integral_u_d2f_da2
         
-        # Term 5: -∂²e/∂a²
+        # Term 4: -∂²e/∂a²
         term4 = -d2e_da2
         
         # Complete mathematical formulation
-        dG_da = term1 + term2a + term2b + term3 + term4
+        dG_da = term1 + term2 + term3 + term4
         
         return dG_da
 
@@ -1165,25 +1147,25 @@ class DuopolySolver:
         # 2. Complementary slackness constraints - RELAXED for numerical feasibility
         def comp_slack_lower_rule(model, i, t):
             # Soft constraint: |nu_L * (a_min - a)| <= tolerance
-            return model.nu_L[i, t] * (self.a_min - model.a[i, t]) <= 1e-4
+            return model.nu_L[i, t] * (self.a_min - model.a[i, t]) == 0
         
         model.comp_slack_lower = pyo.Constraint(model.I, model.THETA, rule=comp_slack_lower_rule)
         
         def comp_slack_upper_rule(model, i, t):
             # Soft constraint: |nu_U * (a - a_max)| <= tolerance  
-            return model.nu_U[i, t] * (model.a[i, t] - self.a_max) <= 1e-4
+            return model.nu_U[i, t] * (model.a[i, t] - self.a_max) == 0
         
         model.comp_slack_upper = pyo.Constraint(model.I, model.THETA, rule=comp_slack_upper_rule)
         
         def comp_slack_premium_rule(model, i):
             # Soft constraint: |eta * phi1| <= tolerance
-            return model.eta[i] * model.phi1[i] <= 1e-4
+            return model.eta[i] * model.phi1[i] == 0
         
         model.comp_slack_premium = pyo.Constraint(model.I, rule=comp_slack_premium_rule)
         
         def comp_slack_indemnity_rule(model, i, z):
             # Already uses soft constraint - keep as is
-            return model.gamma[i, z] * model.phi2[i, z] <= 1e-6
+            return model.gamma[i, z] * model.phi2[i, z] == 0
         
         model.comp_slack_indemnity = pyo.Constraint(model.I, model.Z, rule=comp_slack_indemnity_rule)
         
@@ -1193,14 +1175,13 @@ class DuopolySolver:
             Stationarity with respect to action a^i(θ).
             
             Mathematical formulation:
-            0 = N h(θ) ∂P_i(θ)/∂a^i(θ) [profit_term] 
-                - N h(θ) P_i(θ) [second_term_bracket]
+            0 = N ∂P_i(θ)/∂a^i(θ) [profit_term] 
+                - N P_i(θ) [second_term_bracket]
                 + λ(θ) ∂G(θ)/∂a^i(θ) - ν_L(θ) + ν_U(θ)
             """
             theta = model.theta_vals[t]
             a_val = model.a[i, t]
             phi1_val = model.phi1[i]
-            h_theta_val = model.h_theta[t]
             
             # Get monitoring level
             delta_val = model.delta1 if i == 1 else model.delta2
@@ -1249,8 +1230,8 @@ class DuopolySolver:
             second_term_bracket = -dp_da * integral_phi2_f + p_accident * integral_phi2_df_da
             
             # KKT stationarity condition according to mathematical model
-            term1 = self.N * h_theta_val * dPi_da * profit_term
-            term2 = -self.N * h_theta_val * Pi * second_term_bracket
+            term1 = self.N * dPi_da * profit_term
+            term2 = -self.N * Pi * second_term_bracket
             term3 = model.lam[i, t] * dG_da
             
             return term1 + term2 + term3 - model.nu_L[i, t] + model.nu_U[i, t] == 0
@@ -1324,15 +1305,15 @@ class DuopolySolver:
             
             Mathematical formulation:
             0 = -N ∫ h(θ) P_i(θ) (1-p(a^i(θ))) f(z|a^i(θ),δ^i) dθ 
-                - N ∫ h(θ) ∂P_i(θ)/∂φ₂^i(z) [profit_term] dθ 
+                + N ∫ h(θ) ∂P_i(θ)/∂φ₂^i(z) [profit_term] dθ 
                 + ∫ λ(θ) ∂G(θ)/∂φ₂^i(z) h(θ) dθ - γ^i(z)
             """
             # Get monitoring level for this insurer
             delta_val = model.delta1 if i == 1 else model.delta2
             
             # Calculate complete integrals over all risk types
-            first_integral = 0.0     # -N ∫ h(θ) P_i(θ) (1-p(a^i(θ))) f(z|a^i(θ),δ^i) dθ
-            second_integral = 0.0    # -N ∫ h(θ) ∂P_i(θ)/∂φ₂^i(z) [profit_term] dθ
+            first_integral = 0.0     # ∫ h(θ) P_i(θ) (1-p(a^i(θ))) f(z|a^i(θ),δ^i) dθ
+            second_integral = 0.0    # ∫ h(θ) ∂P_i(θ)/∂φ₂^i(z) [profit_term] dθ
             lambda_dG_integral = 0.0 # ∫ λ(θ) ∂G(θ)/∂φ₂^i(z) h(θ) dθ
             
             for t in model.THETA:
@@ -1374,17 +1355,17 @@ class DuopolySolver:
                 # Get f(z|a^i(θ),δ^i) for the specific state z
                 f_z_val = z_probs[z]
                 
-                # First integral: -N ∫ h(θ) P_i(θ) (1-p(a^i(θ))) f(z|a^i(θ),δ^i) dθ
+                # First integral: ∫ h(θ) P_i(θ) (1-p(a^i(θ))) f(z|a^i(θ),δ^i) dθ
                 first_integral += h_theta_val * Pi * p_accident * f_z_val
                 
-                # Second integral: -N ∫ h(θ) ∂P_i(θ)/∂φ₂^i(z) [profit_term] dθ
+                # Second integral: ∫ h(θ) ∂P_i(θ)/∂φ₂^i(z) [profit_term] dθ
                 second_integral += h_theta_val * dPi_dphi2 * profit_term
                 
                 # Third integral: ∫ λ(θ) ∂G(θ)/∂φ₂^i(z) h(θ) dθ
                 lambda_dG_integral += model.lam[i, t] * dG_dphi2 * h_theta_val
             
             # Stationarity condition
-            return -self.N * first_integral - self.N * second_integral + lambda_dG_integral - model.gamma[i, z] == 0
+            return -self.N * first_integral + self.N * second_integral + lambda_dG_integral - model.gamma[i, z] == 0
         
         model.stationarity_indemnity = pyo.Constraint(model.I, model.Z, rule=stationarity_indemnity_rule)
         
@@ -1441,7 +1422,7 @@ class DuopolySolver:
             opt = pyo.SolverFactory(solver_name)
             if solver_name == 'ipopt':
                 opt.options.update({
-                    'max_iter': 10000 if debug_mode else 5000,  # More iterations for complex problems
+                    'max_iter': 100000 if debug_mode else 50000,  # More iterations for complex problems
                     'tol': 1e-6 if debug_mode else 1e-5,  # Relaxed tolerance
                     'print_level': 5 if verbose or debug_mode else 0,
                     'output_file': 'ipopt_debug.out' if debug_mode else None,
@@ -1808,22 +1789,22 @@ if __name__ == "__main__":
         'W': 100.0,            # Initial wealth (reduced from 1000.0)
         's': 30.0,             # Accident severity (reduced from 300.0)
         'N': 100,              # Number of customers
-        'delta1': 0.8,         # Insurer 1 monitoring level
-        'delta2': 0.6,         # Insurer 2 monitoring level
-        'theta_min': 0.5,      # Minimum risk type
-        'theta_max': 1.5,      # Maximum risk type
-        'n_theta': 5,          # Number of risk types
+        'delta1': 0.9,         # Insurer 1 monitoring level
+        'delta2': 0.2,         # Insurer 2 monitoring level
+        'theta_min': 0.05,      # Minimum risk type
+        'theta_max': 1,      # Maximum risk type
+        'n_theta': 10,          # Number of risk types
         'a_min': 0.0,          # Minimum action level
         'a_max': 1.0,          # Maximum action level
         'mu': 100.0,             # Logit model scale parameter
         'p_alpha': 0.0,        # No accident probability parameter
         'p_beta': 1.0,         # No accident probability parameter
-        'e_kappa': 20.0,       # Action cost parameter (reduced from 200.0)
+        'e_kappa': 30.0,       # Action cost parameter (reduced from 200.0)
         'e_power': 2.0,        # Action cost power
         'f_p_base': 0.5,       # State density parameter
         'c_lambda': 1.0,       # Insurer cost parameter (reduced from 10.0)
         'm_gamma': 2.0,        # Monitoring cost parameter (reduced from 20.0)
-        'u_rho': 0.1,          # Utility parameter (increased from 0.05 for better scaling)
+        'u_rho': 0.05,          # Utility parameter (increased from 0.05 for better scaling)
         'u_max': 100.0,        # Utility parameter (reduced from 1000.0)
     }
     
