@@ -7,9 +7,8 @@ parameters, results, and analysis in a structured and searchable format.
 
 import json
 import logging
-import os
 import datetime
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any, Optional
 import numpy as np
 import pandas as pd
 from pathlib import Path
