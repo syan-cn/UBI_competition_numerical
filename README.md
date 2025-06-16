@@ -4,43 +4,50 @@ A framework for solving duopoly insurance models using Karush-Kuhn-Tucker (KKT) 
 
 ## Overview
 
-This framework implements a duopoly insurance model where two insurers compete by offering contracts to customers with different risk types. It uses KKT conditions to find the mathematical equilibrium.
+This framework implements a duopoly insurance model where two insurers compete by offering contracts to customers with different risk types. It uses KKT conditions to find mathematical equilibrium solutions.
 
 ## Features
 
-- **KKT-Based Solver**: Mathematically rigorous solver using Karush-Kuhn-Tucker conditions
-- **Flexible Functions**: Multiple functional forms for each component (linear, exponential, power, logistic)
-- **Discrete State Spaces**: Support for custom probability structures
-- **Visualization**: Comprehensive plotting and analysis tools
+- **KKT-Based Solver**: Mathematically rigorous equilibrium computation
+- **Flexible Functions**: Multiple functional forms (linear, exponential, power, logistic)
+- **Multi-Solver Support**: Integration with Ipopt, Knitro, and other solvers
+- **Comprehensive Analysis**: Built-in visualization and logging tools
+- **Modular Design**: Clean, maintainable code structure
 
-## Quick Start
+## Installation
 
 1. **Install dependencies:**
 ```bash
 pip install -r requirements.txt
-conda install -c conda-forge ipopt  # or: pip install cyipopt
 ```
 
-2. **Run simulation:**
+2. **Install optimization solver:**
 ```bash
-python duopoly.py
+# Option A: Ipopt (recommended)
+conda install -c conda-forge ipopt
+# OR
+pip install cyipopt
+
+# Option B: Knitro (commercial)
+# Download from https://www.artelys.com/knitro
+```
+
+## Project Structure
+
+```
+├── main.py                 # Main entry point
+├── elements/               # Core model components
+├── solver/                 # Optimization logic
+├── utils/                  # Utilities and tools
+├── outputs/                # Simulation results
+└── logs/                   # Execution logs
 ```
 
 ## Requirements
 
 - Python 3.7+
-- NumPy, SciPy, Matplotlib, Pandas
-- Pyomo >= 6.0.0
-- **Ipopt solver** (required for KKT optimization)
-
-### Solver Dependency
-
-This framework uses **Ipopt** (Interior Point OPTimizer) as the nonlinear optimization solver for the KKT conditions. Ipopt is essential for solving the mathematical equilibrium and must be installed separately from the Python packages.
-
-**Installation options:**
-- **Conda (recommended):** `conda install -c conda-forge ipopt`
-- **Pip:** `pip install cyipopt`
-- **Manual:** Download from [https://coin-or.github.io/Ipopt/](https://coin-or.github.io/Ipopt/)
+- NumPy, SciPy, Matplotlib, Pandas, Pyomo
+- **Optimization Solver**: Ipopt or Knitro (required for KKT optimization)
 
 ## Output
 
