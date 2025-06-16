@@ -608,6 +608,167 @@ class FlexibleFunctions(FunctionTemplates):
 
 
 # ============================================================================
+# SOLVER CONFIGURATION
+# ============================================================================
+
+# Available solvers for this model:
+# - 'ipopt': Interior Point Optimizer (default, free, good for nonlinear problems)
+# - 'knitroampl': Large-scale nonlinear optimization (commercial, requires license)
+# - 'conopt': Large-scale nonlinear optimization (commercial)
+# - 'baron': Global optimization (commercial)
+# - 'scip': Mixed-integer nonlinear optimization (free)
+
+def get_solver_options(solver_name: str, verbose: bool = False, debug_mode: bool = False) -> dict:
+    """
+    Get solver-specific options for different solvers.
+    
+    Args:
+        solver_name: Name of the solver
+        verbose: Whether to print detailed output
+        debug_mode: Whether to enable debug mode
+        
+    Returns:
+        Dictionary of solver options
+    """
+    if solver_name == 'ipopt':
+        return {
+            'max_iter': 5000,
+            'tol': 1e-4,
+            'print_level': 5 if verbose or debug_mode else 0,
+            'output_file': 'ipopt_debug.out' if debug_mode else None,
+            'linear_solver': 'mumps',
+            'hessian_approximation': 'limited-memory',
+            'mu_strategy': 'adaptive',
+            'bound_push': 1e-8,
+            'bound_frac': 1e-8,
+            'slack_bound_push': 1e-8,
+            'slack_bound_frac': 1e-8,
+            'dual_inf_tol': 1e-4,
+            'compl_inf_tol': 1e-4,
+            'acceptable_tol': 1e-3,
+            'acceptable_iter': 10,
+            'alpha_for_y': 'primal',
+            'recalc_y': 'yes',
+            'mehrotra_algorithm': 'yes',
+            'warm_start_init_point': 'yes',
+            'warm_start_bound_push': 1e-8,
+            'warm_start_bound_frac': 1e-8,
+            'warm_start_slack_bound_push': 1e-8,
+            'warm_start_slack_bound_frac': 1e-8,
+            'max_soc': 4,
+            'corrector_type': 'affine',
+            'expect_infeasible_problem': 'yes',
+            'required_infeasibility_reduction': 0.1,
+            'inertia_correction_for_resto': 'yes',
+            'inertia_free_default': 'yes',
+            'obj_scaling_factor': 1.0,
+            'nlp_scaling_method': 'gradient-based',
+            'nlp_scaling_max_gradient': 100.0,
+            'nlp_scaling_min_value': 1e-8
+        }
+    elif solver_name == 'knitroampl':
+        return {
+            'outlev': 3 if verbose or debug_mode else 0,
+            'maxit': 5000,
+            'feastol': 1e-4,
+            'opttol': 1e-4,
+            'honorbnds': 1,
+            'bar_murule': 4,
+            'bar_initpt': 3,
+            'linsolver': 1,
+            'hessopt': 2,
+            'maxcrossit': 0,
+            'presolve': 1
+        }
+    elif solver_name == 'conopt':
+        return {
+            'limrow': 0,
+            'limcol': 0,
+            'iterlim': 5000,
+            'reslim': 1000,
+            'optca': 1e-4,
+            'optcr': 1e-4,
+            'lrf': 0.1,
+            'lrs': 0.1,
+            'bratio': 0.1,
+            'chcub': 1,
+            'chhess': 1,
+            'chinit': 1,
+            'chredg': 1,
+            'chredh': 1,
+            'chredj': 1,
+            'chredl': 1,
+            'chredm': 1,
+            'chredn': 1,
+            'chredp': 1,
+            'chredq': 1,
+            'chredr': 1,
+            'chreds': 1,
+            'chredt': 1,
+            'chredu': 1,
+            'chredv': 1,
+            'chredw': 1,
+            'chredx': 1,
+            'chredy': 1,
+            'chredz': 1
+        }
+    elif solver_name == 'baron':
+        return {
+            'maxtime': 3600,
+            'maxiter': 10000,
+            'prfreq': 100,
+            'outlev': 3 if verbose or debug_mode else 0,
+            'epsr': 1e-4,
+            'epsa': 1e-4,
+            'epso': 1e-4,
+            'epsint': 1e-6,
+            'epscut': 1e-6,
+            'prfreq': 100,
+            'brfreq': 100,
+            'cpfreq': 100,
+            'lpfreq': 100,
+            'nlpfreq': 100,
+            'mipfreq': 100,
+            'rpfreq': 100,
+            'spfreq': 100,
+            'tpfreq': 100,
+            'upfreq': 100,
+            'vpfreq': 100,
+            'wpfreq': 100,
+            'xpfreq': 100,
+            'ypfreq': 100,
+            'zpfreq': 100
+        }
+    elif solver_name == 'scip':
+        return {
+            'display/verblevel': 4 if verbose or debug_mode else 0,
+            'limits/time': 3600,
+            'limits/iterations': 10000,
+            'limits/nodes': 100000,
+            'limits/solutions': 1000,
+            'limits/gap': 1e-4,
+            'limits/absgap': 1e-4,
+            'numerics/feastol': 1e-6,
+            'numerics/epsilon': 1e-9,
+            'numerics/infinity': 1e20,
+            'lp/initalgorithm': 'd',
+            'lp/resolvealgorithm': 'd',
+            'lp/iterlim': 1000,
+            'heuristics/rens/freq': 10,
+            'heuristics/rins/freq': 10,
+            'separating/maxrounds': 10,
+            'separating/maxroundsroot': 10
+        }
+    else:
+        # Default options for other solvers
+        return {
+            'print_level': 3 if verbose or debug_mode else 0,
+            'max_iter': 5000,
+            'tol': 1e-4
+        }
+
+
+# ============================================================================
 # DUOPOLY SOLVER
 # ============================================================================
 
@@ -678,7 +839,7 @@ class DuopolySolver:
             return -expected_utility
         
         result = minimize(objective, x0=(self.a_min + self.a_max)/2, bounds=[(self.a_min, self.a_max)])
-        return 70#-result.fun
+        return -result.fun  # Return the actual optimal utility value
     
     def compute_expected_utility(self, a: float, phi1: float, phi2_values: np.ndarray, delta: float, theta: float) -> float:
         """
@@ -1082,7 +1243,7 @@ class DuopolySolver:
         
         return dG_da
 
-    def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=True):
+    def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=True, executable_path=None):
         """Solve the duopoly equilibrium using KKT conditions with pyomo."""
         if not PYOMO_AVAILABLE:
             raise ImportError("Pyomo is required for KKT-based solving. Please install it with: pip install pyomo")
@@ -1110,8 +1271,8 @@ class DuopolySolver:
         # Decision Variables for both insurers
         model.a = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals, 
                          bounds=(self.a_min, self.a_max))
-        model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=(0.1, self.s))
-        model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals, bounds=(0.0, self.s))
+        model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=(0, self.s))
+        model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals, bounds=(0, self.s))
         
         # Lagrange multipliers
         model.lam = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
@@ -1375,17 +1536,17 @@ class DuopolySolver:
         
         # Initial values
         for i in model.I:
-            model.phi1[i].set_value(self.s * 0.3)  # Start with lower premium
+            model.phi1[i].set_value(self.s * 0.5)  # More conservative initial premium
             for z in model.Z:
-                model.phi2[i, z].set_value(self.s * 0.2)  # Start with lower indemnity
+                model.phi2[i, z].set_value(self.s * 0.4)  # More conservative initial indemnity
             for t in model.THETA:
-                model.a[i, t].set_value(0.5)  # Start with middle action
-                model.lam[i, t].set_value(0.1)  # Small positive multiplier
+                model.a[i, t].set_value(0.3)  # Lower initial action for stability
+                model.lam[i, t].set_value(0.0)  # Start with zero multiplier
                 model.nu_L[i, t].set_value(0.0)  # Start with zero
                 model.nu_U[i, t].set_value(0.0)  # Start with zero
-            model.eta[i].set_value(0.1)  # Small positive multiplier
+            model.eta[i].set_value(0.0)  # Start with zero multiplier
             for z in model.Z:
-                model.gamma[i, z].set_value(0.1)  # Small positive multiplier
+                model.gamma[i, z].set_value(0.0)  # Start with zero multiplier
         
         # Debug mode: Analyze model structure
         if debug_mode:
@@ -1417,41 +1578,21 @@ class DuopolySolver:
         
         # Solve the model
         print(f"\nSolving KKT system with {solver_name} solver...")
-        
         try:
-            opt = pyo.SolverFactory(solver_name)
-            if solver_name == 'ipopt':
-                opt.options.update({
-                    'max_iter': 100000 if debug_mode else 50000,  # More iterations for complex problems
-                    'tol': 1e-6 if debug_mode else 1e-5,  # Relaxed tolerance
-                    'print_level': 5 if verbose or debug_mode else 0,
-                    'output_file': 'ipopt_debug.out' if debug_mode else None,
-                    'linear_solver': 'mumps',  # Good for economic problems
-                    'hessian_approximation': 'limited-memory',
-                    'mu_strategy': 'adaptive',
-                    'bound_push': 1e-6,  # Relaxed for better convergence
-                    'bound_frac': 1e-6,
-                    'slack_bound_push': 1e-6,
-                    'slack_bound_frac': 1e-6,
-                    'dual_inf_tol': 1e-6,  # Relaxed dual infeasibility tolerance
-                    'compl_inf_tol': 1e-6,  # Relaxed complementarity tolerance
-                    'acceptable_tol': 1e-5,  # Relaxed acceptable tolerance
-                    'acceptable_iter': 15,  # More acceptable iterations
-                    'alpha_for_y': 'primal',  # Better for economic problems
-                    'recalc_y': 'yes',  # Recalculate dual variables
-                    'mehrotra_algorithm': 'yes',  # Use Mehrotra's algorithm
-                    'warm_start_init_point': 'yes',  # Use warm start
-                    'warm_start_bound_push': 1e-6,
-                    'warm_start_bound_frac': 1e-6,
-                    'warm_start_slack_bound_push': 1e-6,
-                    'warm_start_slack_bound_frac': 1e-6
-                })
+            # Create solver with optional executable path
+            if executable_path and solver_name == 'knitroampl':
+                print(f"Using KNITRO executable: {executable_path}")
+                opt = pyo.SolverFactory(solver_name, executable=executable_path)
+            else:
+                opt = pyo.SolverFactory(solver_name)
             
+            # Use centralized solver options for all solvers
+            solver_options = get_solver_options(solver_name, verbose=verbose, debug_mode=debug_mode)
+            if solver_options:
+                opt.options.update({k: v for k, v in solver_options.items() if v is not None})
             import time
             start_time = time.time()
-            
             results = opt.solve(model, tee=verbose or debug_mode)
-            
             solve_time = time.time() - start_time
             
             # Enhanced result analysis
@@ -1574,7 +1715,7 @@ class DuopolySolver:
                 traceback.print_exc()
             return None
 
-    def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None):
+    def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, executable_path=None):
         """
         Run KKT-based simulation for duopoly insurance model.
         
@@ -1583,6 +1724,7 @@ class DuopolySolver:
             verbose: Whether to print detailed output
             save_plots: Whether to save plots to files
             logger: SimulationLogger instance for recording results
+            executable_path: Optional path to solver executable (useful for KNITRO)
             
         Returns:
             Tuple of (success, solution) where solution is a dictionary containing simulation results
@@ -1602,13 +1744,14 @@ class DuopolySolver:
             logger.log_simulation_settings({
                 'solver_name': solver_name,
                 'save_plots': save_plots,
-                'verbose': verbose
+                'verbose': verbose,
+                'executable_path': executable_path
             })
             logger.log_parameters(self.params)
 
         try:
             start_time = time.time()
-            solution = self.build_and_solve_model(solver_name=solver_name, verbose=verbose)
+            solution = self.build_and_solve_model(solver_name=solver_name, verbose=verbose, executable_path=executable_path)
             solve_time = time.time() - start_time
 
             if solution is not None:
@@ -1786,26 +1929,26 @@ def plot_results(solver: DuopolySolver, solution: Dict, save_path: str = None):
 if __name__ == "__main__":
     # Example parameters
     params = {
-        'W': 100.0,            # Initial wealth (reduced from 1000.0)
-        's': 30.0,             # Accident severity (reduced from 300.0)
+        'W': 100.0,            # Initial wealth
+        's': 30.0,             # Accident severity
         'N': 100,              # Number of customers
         'delta1': 0.9,         # Insurer 1 monitoring level
         'delta2': 0.2,         # Insurer 2 monitoring level
         'theta_min': 0.05,      # Minimum risk type
         'theta_max': 1,      # Maximum risk type
-        'n_theta': 10,          # Number of risk types
-        'a_min': 0.0,          # Minimum action level
+        'n_theta': 2,          # Number of risk types
+        'a_min': 0.05,          # Minimum action level
         'a_max': 1.0,          # Maximum action level
         'mu': 100.0,             # Logit model scale parameter
         'p_alpha': 0.0,        # No accident probability parameter
         'p_beta': 1.0,         # No accident probability parameter
-        'e_kappa': 30.0,       # Action cost parameter (reduced from 200.0)
+        'e_kappa': 30.0,       # Action cost parameter
         'e_power': 2.0,        # Action cost power
         'f_p_base': 0.5,       # State density parameter
-        'c_lambda': 1.0,       # Insurer cost parameter (reduced from 10.0)
-        'm_gamma': 2.0,        # Monitoring cost parameter (reduced from 20.0)
-        'u_rho': 0.05,          # Utility parameter (increased from 0.05 for better scaling)
-        'u_max': 100.0,        # Utility parameter (reduced from 1000.0)
+        'c_lambda': 10.0,       # Insurer cost parameter
+        'm_gamma': 20.0,        # Monitoring cost parameter
+        'u_rho': 1e-3,          # Utility parameter
+        'u_max': 100.0,        # Utility parameter
     }
     
     print("="*60)
@@ -1835,10 +1978,11 @@ if __name__ == "__main__":
     
     # Run simulation using the simplified run method
     success, solution = solver.run(
-        solver_name='ipopt',
+        solver_name='knitroampl',
         verbose=False,
         save_plots=True,
-        logger=logger
+        logger=logger,
+        executable_path='/Users/syan/knitro-14.2.0-ARM-MacOS/knitroampl/knitroampl'
     )
     
     if success:
