@@ -201,8 +201,6 @@ class SimulationLogger:
         self.logger.info(f"Insurer {insurer_id} optimization completed:")
         self.logger.info(f"  Premium: {result.get('premium', 0):.2f}")
         self.logger.info(f"  Expected Profit: {result.get('expected_profit', 0):.2f}")
-        self.logger.info(f"  Average Action: {np.mean(result.get('a_schedule', [0])):.4f}")
-        self.logger.info(f"  Average Indemnity: {np.mean(result.get('indemnity_values', [0])):.2f}")
     
     def log_duopoly_solution(self, solution: Dict[str, Any], state_name: str = "default"):
         """Log the complete duopoly solution."""
@@ -240,6 +238,24 @@ class SimulationLogger:
         self.logger.info(f"  Insurer 2 - Indemnity Values: {np.array2string(solution['insurer2']['indemnity_values'], precision=2, separator=', ')}")
         
         self.logger.info(f"  Total Market Profit: {solution.get('total_profit', 0):.2f}")
+    
+    def log_solution_summary(self, summary_data: Dict[str, Any], state_name: str = "default"):
+        """Log a summary of solution results."""
+        if 'results' not in self.simulation_data:
+            self.simulation_data['results'] = {}
+        
+        if state_name not in self.simulation_data['results']:
+            self.simulation_data['results'][state_name] = {}
+        
+        # Store solution summary
+        self.simulation_data['results'][state_name]['solution_summary'] = summary_data.copy()
+        
+        self.logger.info(f"Solution summary for {state_name}:")
+        for key, value in summary_data.items():
+            if isinstance(value, float):
+                self.logger.info(f"  {key}: {value:.4f}")
+            else:
+                self.logger.info(f"  {key}: {value}")
     
     def log_sensitivity_analysis(self, 
                                param_name: str, 

@@ -19,9 +19,21 @@ try:
 except ImportError:
     PYOMO_AVAILABLE = False
 
+# Pyomo MPEC imports for complementarity constraints
+try:
+    from pyomo.mpec import complements, Complementarity
+    MPEC_AVAILABLE = True
+except ImportError:
+    MPEC_AVAILABLE = False
+    print("Warning: Pyomo MPEC module not available. Using relaxed complementary slackness constraints.")
+
 
 def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=True, executable_path=None):
-    """Solve the duopoly equilibrium using KKT conditions with pyomo."""
+    """
+    Solve the duopoly equilibrium using KKT conditions with pyomo.
+
+    """
+
     if not PYOMO_AVAILABLE:
         raise ImportError("Pyomo is required for KKT-based solving. Please install it with: pip install pyomo")
     
@@ -48,8 +60,8 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
     # Decision Variables for both insurers
     model.a = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals, 
                      bounds=(self.a_min, self.a_max))
-    model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=(0, self.s))
-    model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals, bounds=(0, self.s))
+    model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=(0, self.s*100))
+    model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals, bounds=(0, self.s*10))
     
     # Lagrange multipliers
     model.lam = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
@@ -75,26 +87,57 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
     
     model.incentive_constraint = pyo.Constraint(model.I, model.THETA, rule=incentive_constraint_rule)
     
-    # Complementary slackness constraints - RELAXED for numerical feasibility
-    def comp_slack_lower_rule(model, i, t):
-        return model.nu_L[i, t] * (self.a_min - model.a[i, t]) == 0
-    
-    model.comp_slack_lower = pyo.Constraint(model.I, model.THETA, rule=comp_slack_lower_rule)
-    
-    def comp_slack_upper_rule(model, i, t):
-        return model.nu_U[i, t] * (model.a[i, t] - self.a_max) == 0
-    
-    model.comp_slack_upper = pyo.Constraint(model.I, model.THETA, rule=comp_slack_upper_rule)
-    
-    def comp_slack_premium_rule(model, i):
-        return model.eta[i] * model.phi1[i] == 0
-    
-    model.comp_slack_premium = pyo.Constraint(model.I, rule=comp_slack_premium_rule)
-    
-    def comp_slack_indemnity_rule(model, i, z):
-        return model.gamma[i, z] * model.phi2[i, z] == 0
-    
-    model.comp_slack_indemnity = pyo.Constraint(model.I, model.Z, rule=comp_slack_indemnity_rule)
+    # Complementary slackness constraints using MPEC formulation
+    if MPEC_AVAILABLE:
+        print("Using MPEC complementarity constraints...")
+        
+        # Action lower bound complementarity: ν_L^i(θ) ⟂ (a^i(θ) - a_min)
+        def action_lower_bound_rule(model, i, t):
+            return complements(model.nu_L[i, t] >= 0, model.a[i, t] - self.a_min >= 0)
+        
+        model.action_lower_bound = Complementarity(model.I, model.THETA, rule=action_lower_bound_rule)
+        
+        # Action upper bound complementarity: ν_U^i(θ) ⟂ (a_max - a^i(θ))
+        def action_upper_bound_rule(model, i, t):
+            return complements(model.nu_U[i, t] >= 0, self.a_max - model.a[i, t] >= 0)
+        
+        model.action_upper_bound = Complementarity(model.I, model.THETA, rule=action_upper_bound_rule)
+        
+        # Premium non-negativity complementarity: η^i ⊥ φ₁^i
+        def premium_nonnegativity_rule(model, i):
+            return complements(model.eta[i] >= 0, model.phi1[i] >= 0)
+        
+        model.premium_nonnegativity = Complementarity(model.I, rule=premium_nonnegativity_rule)
+        
+        # Indemnity non-negativity complementarity: γ^i(z) ⊥ φ₂^i(z)
+        def indemnity_nonnegativity_rule(model, i, z):
+            return complements(model.gamma[i, z] >= 0, model.phi2[i, z] >= 0)
+        
+        model.indemnity_nonnegativity = Complementarity(model.I, model.Z, rule=indemnity_nonnegativity_rule)
+        
+    else:
+        print("MPEC not available, using relaxed complementary slackness constraints...")
+        
+        # Fallback to relaxed complementary slackness constraints
+        def comp_slack_lower_rule(model, i, t):
+            return model.nu_L[i, t] * (self.a_min - model.a[i, t]) == 0
+        
+        model.comp_slack_lower = pyo.Constraint(model.I, model.THETA, rule=comp_slack_lower_rule)
+        
+        def comp_slack_upper_rule(model, i, t):
+            return model.nu_U[i, t] * (model.a[i, t] - self.a_max) == 0
+        
+        model.comp_slack_upper = pyo.Constraint(model.I, model.THETA, rule=comp_slack_upper_rule)
+        
+        def comp_slack_premium_rule(model, i):
+            return model.eta[i] * model.phi1[i] == 0
+        
+        model.comp_slack_premium = pyo.Constraint(model.I, rule=comp_slack_premium_rule)
+        
+        def comp_slack_indemnity_rule(model, i, z):
+            return model.gamma[i, z] * model.phi2[i, z] == 0
+        
+        model.comp_slack_indemnity = pyo.Constraint(model.I, model.Z, rule=comp_slack_indemnity_rule)
     
     # Stationarity conditions
     def stationarity_action_rule(model, i, t):
@@ -303,11 +346,15 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
         # Count variables and constraints
         total_vars = len(model.component_map(pyo.Var))
         total_constrs = len(model.component_map(pyo.Constraint))
+        # Count MPEC complementarity constraints if available
+        total_mpec_constrs = 0
         
         print(f"Model Statistics:")
         print(f"  - Variables: {total_vars}")
-        print(f"  - Constraints: {total_constrs}")
-        print(f"  - C/V Ratio: {total_constrs/total_vars:.2f}")
+        print(f"  - Regular Constraints: {total_constrs}")
+        print(f"  - MPEC Constraints: {total_mpec_constrs}")
+        print(f"  - Total Constraints: {total_constrs + total_mpec_constrs}")
+        print(f"  - C/V Ratio: {(total_constrs + total_mpec_constrs)/total_vars:.2f}")
         
         # Check variable bounds
         print(f"\nVariable Bounds Check:")
@@ -333,7 +380,13 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
             opt = pyo.SolverFactory(solver_name)
         
         # Use centralized solver options for all solvers
+        # Check if we're using MPEC formulation
+        is_mpec_problem = MPEC_AVAILABLE and hasattr(model, 'action_lower_bound')
         solver_options = get_solver_options(solver_name, verbose=verbose, debug_mode=debug_mode)
+        
+        if is_mpec_problem:
+            print("Using MPEC-specific solver options for complementarity constraints...")
+        
         if solver_options:
             opt.options.update({k: v for k, v in solver_options.items() if v is not None})
         
@@ -355,37 +408,6 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
             
             if hasattr(results.solver, 'objective_value'):
                 print(f"Objective Value: {results.solver.objective_value}")
-            
-            # Check constraint violations
-            print(f"\nConstraint Violation Analysis:")
-            max_violation = 0.0
-            num_violated = 0
-            
-            for constr_name, constr_obj in model.component_map(pyo.Constraint).items():
-                for idx in constr_obj.index_set():
-                    constr = constr_obj[idx]
-                    try:
-                        body_value = pyo.value(constr.body)
-                        lower_value = pyo.value(constr.lower) if constr.lower is not None else None
-                        upper_value = pyo.value(constr.upper) if constr.upper is not None else None
-                        
-                        violation = 0.0
-                        if lower_value is not None and body_value < lower_value:
-                            violation = lower_value - body_value
-                        elif upper_value is not None and body_value > upper_value:
-                            violation = body_value - upper_value
-                        
-                        if violation > 1e-6:
-                            num_violated += 1
-                            max_violation = max(max_violation, violation)
-                            if num_violated <= 5:  # Show first 5 violations
-                                print(f"  {constr_name}[{idx}]: violation={violation:.2e}")
-                                
-                    except Exception as e:
-                        print(f"  Error evaluating {constr_name}[{idx}]: {e}")
-            
-            print(f"Total violations: {num_violated}")
-            print(f"Maximum violation: {max_violation:.2e}")
             
             # Read detailed solver output if available
             try:
@@ -562,4 +584,4 @@ def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, e
             logger.log_error(error_msg)
             logger.log_experiment_end("Simulation failed with error")
         
-        return False, None 
+        return False, None

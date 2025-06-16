@@ -17,7 +17,7 @@ def get_solver_options(solver_name: str, verbose: bool = False, debug_mode: bool
         Dictionary of solver options
     """
     if solver_name == 'ipopt':
-        return {
+        base_options = {
             'max_iter': 5000,
             'tol': 1e-4,
             'print_level': 5 if verbose or debug_mode else 0,
@@ -35,8 +35,11 @@ def get_solver_options(solver_name: str, verbose: bool = False, debug_mode: bool
             'warm_start_init_point': 'yes',
             'nlp_scaling_method': 'gradient-based'
         }
+        
+        return base_options
+        
     elif solver_name == 'knitroampl':
-        return {
+        base_options = {
             'outlev': 3 if verbose or debug_mode else 0,
             'maxit': 5000,
             'feastol': 1e-4,
@@ -48,8 +51,11 @@ def get_solver_options(solver_name: str, verbose: bool = False, debug_mode: bool
             'hessopt': 2,
             'presolve': 1
         }
+        
+        return base_options
+        
     elif solver_name == 'conopt':
-        return {
+        base_options = {
             'limrow': 0,
             'limcol': 0,
             'iterlim': 5000,
@@ -60,8 +66,11 @@ def get_solver_options(solver_name: str, verbose: bool = False, debug_mode: bool
             'lrs': 0.1,
             'bratio': 0.1
         }
+        
+        return base_options
+        
     elif solver_name == 'baron':
-        return {
+        base_options = {
             'maxtime': 3600,
             'maxiter': 10000,
             'outlev': 3 if verbose or debug_mode else 0,
@@ -72,8 +81,11 @@ def get_solver_options(solver_name: str, verbose: bool = False, debug_mode: bool
             'epscut': 1e-6,
             'prfreq': 100
         }
+        
+        return base_options
+        
     elif solver_name == 'scip':
-        return {
+        base_options = {
             'display/verblevel': 4 if verbose or debug_mode else 0,
             'limits/time': 3600,
             'limits/iterations': 10000,
@@ -83,10 +95,15 @@ def get_solver_options(solver_name: str, verbose: bool = False, debug_mode: bool
             'lp/initalgorithm': 'd',
             'lp/resolvealgorithm': 'd'
         }
+        
+        return base_options
+        
     else:
         # Default options for other solvers
-        return {
+        base_options = {
             'print_level': 3 if verbose or debug_mode else 0,
             'max_iter': 5000,
             'tol': 1e-4
-        } 
+        }
+        
+        return base_options 
