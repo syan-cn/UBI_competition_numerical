@@ -7,6 +7,7 @@ duopoly insurance model framework.
 
 from elements.function_set import Functions
 from solver.helper import DuopolySolver
+from solver.mpec_solver import MPECSolver, run_mpec
 from utils.logger import SimulationLogger
 
 
@@ -16,7 +17,7 @@ def main():
     # Example parameters
     params = {
         'W': 100.0,            # Initial wealth
-        's': 30.0,             # Accident severity
+        's': 50.0,             # Accident severity
         'N': 100,              # Number of customers
         'delta1': 0.9,         # Insurer 1 monitoring level
         'delta2': 0.2,         # Insurer 2 monitoring level
@@ -43,7 +44,7 @@ def main():
 
     # Create logger for analysis
     logger = SimulationLogger(
-        experiment_name="duopoly_kkt_demo",
+        experiment_name="duopoly_demo",
         log_level="INFO"
     )
     
@@ -57,12 +58,40 @@ def main():
         'c': 'linear'
     }
     
-    # Create solver with the function configuration
+    # Create function set
     functions = Functions(function_config)
-    solver = DuopolySolver(functions, params)
     
-    # Run simulation using the simplified run method
-    success, solution = solver.run(
+    # # Run KKT-based simulation
+    # print("\n" + "="*40)
+    # print("KKT-BASED SOLVER")
+    # print("="*40)
+    
+    # solver = DuopolySolver(functions, params)
+    
+    # # Run simulation using the simplified run method
+    # success, solution = solver.run(
+    #     solver_name='knitroampl',
+    #     verbose=False,
+    #     save_plots=True,
+    #     logger=logger,
+    #     executable_path='/Users/syan/knitro-14.2.0-ARM-MacOS/knitroampl/knitroampl'
+    # )
+    
+    # if success:
+    #     print("✅ KKT-based simulation completed!")
+    #     print(f"Solve time: {solution.get('solve_time', 'N/A')} seconds")
+    # else:
+    #     print("❌ KKT-based simulation failed!")
+    
+    # Run MPEC-based simulation
+    print("\n" + "="*40)
+    print("MPEC-BASED SOLVER")
+    print("="*40)
+    
+    # Run MPEC solver
+    mpec_success, mpec_solution = run_mpec(
+        functions=functions,
+        params=params,
         solver_name='knitroampl',
         verbose=False,
         save_plots=True,
@@ -70,11 +99,13 @@ def main():
         executable_path='/Users/syan/knitro-14.2.0-ARM-MacOS/knitroampl/knitroampl'
     )
     
-    if success:
-        print("✅ KKT-based simulation completed!")
-        print(f"Solve time: {solution.get('solve_time', 'N/A')} seconds")
+    if mpec_success:
+        print("✅ MPEC-based simulation completed!")
+        print(f"Solve time: {mpec_solution.get('solve_time', 'N/A')} seconds")
+        print(f"Objective value: {mpec_solution.get('objective_value', 'N/A')}")
     else:
-        print("❌ KKT-based simulation failed!")
+        print("❌ MPEC-based simulation failed!")
+        print(f"Error: {mpec_solution.get('error', 'Unknown error')}")
     
     print("\n" + "="*60)
     print("DEMONSTRATION COMPLETED")
