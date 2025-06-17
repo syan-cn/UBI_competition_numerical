@@ -11,28 +11,33 @@ from utils.logger import SimulationLogger
 
 
 def main():
-    """Main function demonstrating the duopoly insurance model."""
+    """
+    Main function demonstrating the duopoly insurance model.
+    
+    """
     
     # Example parameters
     params = {
         'W': 500.0,            # Initial wealth
         's': 200.0,             # Accident severity
         'N': 100,              # Number of customers
-        'delta1': 0.9,         # Insurer 1 monitoring level
-        'delta2': 0.2,         # Insurer 2 monitoring level
+        'delta1': 1,         # Insurer 1 monitoring level
+        'delta2': 0.3,         # Insurer 2 monitoring level
         'theta_min': 0.05,      # Minimum risk type
         'theta_max': 1,      # Maximum risk type
         'n_theta': 10,          # Number of risk types
         'a_min': 0.05,          # Minimum action level
-        'a_max': 1.0,          # Maximum action level
-        'mu': 2.0,             # Logit model scale parameter
-        'p_alpha': 0.0,        # No accident probability parameter
-        'p_beta': 1.0,         # No accident probability parameter
+        'a_max': 0.95,          # Maximum action level
+        'mu': 50.0,             # Logit model scale parameter
+        'p_alpha': 0.0,        # No accident probability parameter (for linear)
+        'p_beta': 1.0,         # No accident probability parameter (for linear)
+        'p_hat': 0.4,          # Base probability parameter (for binomial)
+        'n_trials': 2,         # Number of trials (for binomial)
         'e_kappa': 15.0,       # Action cost parameter
         'e_power': 2.0,        # Action cost power
-        'f_p_base': 0.5,       # State density parameter
+        'f_p_base': 0.5,       # State density parameter (for binary_states)
         'c_lambda': 10.0,       # Insurer cost parameter
-        'm_gamma': 20.0,        # Monitoring cost parameter
+        'm_gamma': 5.0,        # Monitoring cost parameter
         'u_rho': 1e-3,          # Utility parameter
         'u_max_val': 100.0,        # Utility parameter
     }
@@ -48,12 +53,21 @@ def main():
     )
     
     # Create function configuration
+    # function_config = {
+    #     'p': 'linear',        # Use linear accident probability
+    #     'm': 'linear',
+    #     'e': 'power',
+    #     'u': 'exponential',
+    #     'f': 'binary_states', # Use binary state density
+    #     'c': 'linear'
+    # }
+
     function_config = {
-        'p': 'linear',
+        'p': 'binomial',        # Use binomial accident probability
         'm': 'linear',
         'e': 'power',
         'u': 'exponential',
-        'f': 'binary_states',
+        'f': 'binomial_states', # Use binomial state density
         'c': 'linear'
     }
     
@@ -84,4 +98,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
