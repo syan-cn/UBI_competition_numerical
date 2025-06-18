@@ -114,11 +114,11 @@ class Functions(FunctionTemplates):
             if key not in function_config:
                 raise ValueError(f"Function configuration must include '{key}'")
         valid_forms = {
-            'p': ['linear', 'exponential', 'power', 'logistic'],
+            'p': ['linear', 'binomial'],
             'm': ['linear', 'exponential', 'power'],
             'e': ['power'],
             'u': ['exponential', 'power', 'logarithmic'],
-            'f': ['binary_states'],
+            'f': ['binary_states', 'binomial_states'],
             'c': ['linear', 'exponential', 'power']
         }
         for key, form in function_config.items():
@@ -140,12 +140,8 @@ class Functions(FunctionTemplates):
         form = self.function_config['p']
         if form == 'linear':
             return NoAccidentProbability.linear(a, params)
-        elif form == 'exponential':
-            return NoAccidentProbability.exponential(a, params)
-        elif form == 'power':
-            return NoAccidentProbability.power(a, params)
-        elif form == 'logistic':
-            return NoAccidentProbability.logistic(a, params)
+        elif form == 'binomial':
+            return NoAccidentProbability.binomial(a, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 
@@ -182,6 +178,8 @@ class Functions(FunctionTemplates):
         form = self.function_config['f']
         if form == 'binary_states':
             return StateDensity.binary_states(a, delta, params)
+        elif form == 'binomial_states':
+            return StateDensity.binomial_states(a, delta, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 
@@ -200,12 +198,8 @@ class Functions(FunctionTemplates):
         form = self.function_config['p']
         if form == 'linear':
             return NoAccidentProbability.dp_da_linear(a, params)
-        elif form == 'exponential':
-            return NoAccidentProbability.dp_da_exponential(a, params)
-        elif form == 'power':
-            return NoAccidentProbability.dp_da_power(a, params)
-        elif form == 'logistic':
-            return NoAccidentProbability.dp_da_logistic(a, params)
+        elif form == 'binomial':
+            return NoAccidentProbability.dp_da_binomial(a, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 
@@ -213,12 +207,8 @@ class Functions(FunctionTemplates):
         form = self.function_config['p']
         if form == 'linear':
             return NoAccidentProbability.d2p_da2_linear(a, params)
-        elif form == 'exponential':
-            return NoAccidentProbability.d2p_da2_exponential(a, params)
-        elif form == 'power':
-            return NoAccidentProbability.d2p_da2_power(a, params)
-        elif form == 'logistic':
-            return NoAccidentProbability.d2p_da2_logistic(a, params)
+        elif form == 'binomial':
+            return NoAccidentProbability.d2p_da2_binomial(a, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 
@@ -240,6 +230,8 @@ class Functions(FunctionTemplates):
         form = self.function_config['f']
         if form == 'binary_states':
             return StateDensity.df_da_binary_states(a, delta, params)
+        elif form == 'binomial_states':
+            return StateDensity.df_da_binomial_states(a, delta, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 

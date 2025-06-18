@@ -70,6 +70,45 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
     model.eta = pyo.Var(model.I, domain=pyo.NonNegativeReals)
     model.gamma = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals)
     
+    # Set starting values if provided
+    if hasattr(self, 'starting_point') and self.starting_point is not None:
+        print("Setting starting values from multistart...")
+        start_point = self.starting_point
+        
+        # Set starting values for action levels
+        for i in model.I:
+            for t in model.THETA:
+                if (i, t) in start_point['a']:
+                    model.a[i, t].value = start_point['a'][(i, t)]
+        
+        # Set starting values for premiums
+        for i in model.I:
+            if i in start_point['phi1']:
+                model.phi1[i].value = start_point['phi1'][i]
+        
+        # Set starting values for indemnities
+        for i in model.I:
+            for z in model.Z:
+                if (i, z) in start_point['phi2']:
+                    model.phi2[i, z].value = start_point['phi2'][(i, z)]
+        
+        # Set starting values for Lagrange multipliers
+        for i in model.I:
+            for t in model.THETA:
+                if (i, t) in start_point['lam']:
+                    model.lam[i, t].value = start_point['lam'][(i, t)]
+                if (i, t) in start_point['nu_L']:
+                    model.nu_L[i, t].value = start_point['nu_L'][(i, t)]
+                if (i, t) in start_point['nu_U']:
+                    model.nu_U[i, t].value = start_point['nu_U'][(i, t)]
+            
+            if i in start_point['eta']:
+                model.eta[i].value = start_point['eta'][i]
+            
+            for z in model.Z:
+                if (i, z) in start_point['gamma']:
+                    model.gamma[i, z].value = start_point['gamma'][(i, z)]
+    
     def incentive_constraint_rule(model, i, t):
         """Incentive compatibility constraint G(θ) = 0."""
         theta = model.theta_vals[t]
@@ -323,20 +362,6 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
     # Objective function - 0
     model.obj = pyo.Objective(expr=0, sense=pyo.minimize)
     
-    # Initial values
-    for i in model.I:
-        model.phi1[i].set_value(self.s * 0.5)  # More conservative initial premium
-        for z in model.Z:
-            model.phi2[i, z].set_value(self.s * 0.4)  # More conservative initial indemnity
-        for t in model.THETA:
-            model.a[i, t].set_value(0.3)  # Lower initial action for stability
-            model.lam[i, t].set_value(0.0)  # Start with zero multiplier
-            model.nu_L[i, t].set_value(0.0)  # Start with zero
-            model.nu_U[i, t].set_value(0.0)  # Start with zero
-        model.eta[i].set_value(0.0)  # Start with zero multiplier
-        for z in model.Z:
-            model.gamma[i, z].set_value(0.0)  # Start with zero multiplier
-    
     # Debug mode: Analyze model structure
     if debug_mode:
         print("\n" + "="*50)
@@ -355,20 +380,7 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
         print(f"  - MPEC Constraints: {total_mpec_constrs}")
         print(f"  - Total Constraints: {total_constrs + total_mpec_constrs}")
         print(f"  - C/V Ratio: {(total_constrs + total_mpec_constrs)/total_vars:.2f}")
-        
-        # Check variable bounds
-        print(f"\nVariable Bounds Check:")
-        for var_name, var_obj in model.component_map(pyo.Var).items():
-            print(f"  {var_name}:")
-            for idx in var_obj.index_set():
-                var = var_obj[idx]
-                lb = var.lb
-                ub = var.ub
-                if lb is not None and ub is not None and lb > ub:
-                    print(f"    WARNING: Bound conflict at {var_name}[{idx}]: lb={lb}, ub={ub}")
-                elif lb is not None and ub is not None and (ub - lb) < 1e-6:
-                    print(f"    WARNING: Tight bounds at {var_name}[{idx}]: range={ub-lb:.2e}")
-    
+
     # Solve the model
     print(f"\nSolving KKT system with {solver_name} solver...")
     try:
@@ -534,7 +546,6 @@ def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, e
                 print(f"  Premium φ₁^{insurer_id}: {solution[key]['phi1']:.4f}")
                 print(f"  Indemnities φ₂^{insurer_id}: {solution[key]['phi2']}")
                 print(f"  Action schedule a^{insurer_id}(θ): {solution[key]['a_schedule']}")
-                print(f"  Average action: {np.mean(solution[key]['a_schedule']):.4f}")
 
             # Log performance metrics if logger is provided
             if logger:
@@ -544,8 +555,6 @@ def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, e
                 logger.log_solution_summary({
                     'insurer1_premium': solution['insurer1']['phi1'],
                     'insurer2_premium': solution['insurer2']['phi1'],
-                    'insurer1_avg_action': np.mean(solution['insurer1']['a_schedule']),
-                    'insurer2_avg_action': np.mean(solution['insurer2']['a_schedule']),
                     'solve_time': solve_time
                 })
 

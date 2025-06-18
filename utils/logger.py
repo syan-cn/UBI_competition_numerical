@@ -319,8 +319,12 @@ class SimulationLogger:
             self.logger.warning(f"Details: {details}")
     
     def log_plot_generation(self, plot_type: str, save_path: str, state_name: str = "default"):
-        """Log plot generation."""
+        """Log the generation of a plot."""
         self.logger.info(f"Generated {plot_type} plot for {state_name}: {save_path}")
+    
+    def log_file_generation(self, file_type: str, save_path: str, context: str = "default"):
+        """Log the generation of a file."""
+        self.logger.info(f"Generated {file_type} file for {context}: {save_path}")
     
     def _save_all_data(self):
         """Save all logged data to files."""
@@ -444,7 +448,6 @@ class SimulationLogger:
                     'insurer1_profit': solution['insurer1']['expected_profit'],
                     'insurer2_premium': solution['insurer2']['premium'],
                     'insurer2_profit': solution['insurer2']['expected_profit'],
-                    'total_profit': solution.get('total_profit', 0)
                 }
         
         return summary

@@ -7,6 +7,7 @@ in insurance models, including state density functions.
 
 import numpy as np
 from typing import Dict, Tuple, List
+from scipy.special import comb
 
 
 class DiscreteStateSpace:
@@ -61,4 +62,50 @@ class StateDensity:
     @staticmethod
     def df_da_binary_states(a: float, delta: float, params: Dict) -> np.ndarray:
         # dP(z=1)/da = delta, dP(z=0)/da = -delta
-        return np.array([-delta, delta]) 
+        return np.array([-delta, delta])
+    
+    @staticmethod
+    def binomial_states(a: float, delta: float, params: Dict) -> DiscreteStateSpace:
+        """
+        Binomial state space: z ∈ {0, 1, 2, ..., n}
+        f(z | a, delta) = C(n,z) * [σ(a)δ]^z * [1-σ(a)δ]^(n-z)
+        where σ(a) = 1 - a
+        """
+        if 'n_trials' not in params:
+            raise ValueError("Parameter 'n_trials' is required for binomial state density function")
+        
+        n = params['n_trials']
+        p_success = (1 - a) * delta
+        
+        z_values = list(range(n + 1))  # 0, 1, 2, ..., n
+        z_probs = []
+        
+        for z in z_values:
+            prob = comb(n, z) * (p_success ** z) * ((1 - p_success) ** (n - z))
+            z_probs.append(prob)
+        
+        return DiscreteStateSpace(z_values, z_probs)
+    
+    @staticmethod
+    def df_da_binomial_states(a: float, delta: float, params: Dict) -> np.ndarray:
+        """
+        Derivative of binomial state density with respect to effort a
+        df(z|a,δ)/da = -δ * C(n,z) * [(1-a)δ]^(z-1) * [1-(1-a)δ]^(n-z-1) * [z(1-(1-a)δ) - (n-z)(1-a)δ]
+        """
+        if 'n_trials' not in params:
+            raise ValueError("Parameter 'n_trials' is required for binomial state density function")
+        
+        n = params['n_trials']
+        p_success = (1 - a) * delta
+        
+        derivatives = []
+        
+        for z in range(n + 1):
+            # Use the same formula for all z values
+            term1 = comb(n, z) * (p_success ** (z - 1)) * ((1 - p_success) ** (n - z - 1))
+            term2 = z * (1 - p_success) - (n - z) * p_success
+            deriv = -delta * term1 * term2
+            
+            derivatives.append(deriv)
+        
+        return np.array(derivatives)
