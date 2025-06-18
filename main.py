@@ -12,7 +12,10 @@ from utils.logger import SimulationLogger
 
 def main():
     """
+    
     Main function demonstrating the duopoly insurance model.
+    
+    
     
     """
     
@@ -62,11 +65,22 @@ def main():
     #     'c': 'linear'
     # }
 
+    # function_config = {
+    #     'p': 'linear',        # Use linear accident probability
+    #     'm': 'linear',
+    #     'e': 'power',
+    #     'u': 'exponential',
+    #     'f': 'binary_states', # Use binary state density
+    #     'c': 'linear'
+    # }
+
     function_config = {
+        'p': 'binomial',        # Use binomial accident probability
         'p': 'binomial',        # Use binomial accident probability
         'm': 'linear',
         'e': 'power',
         'u': 'exponential',
+        'f': 'binomial_states', # Use binomial state density
         'f': 'binomial_states', # Use binomial state density
         'c': 'linear'
     }
@@ -110,4 +124,6 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
+
     main()
