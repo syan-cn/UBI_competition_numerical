@@ -92,7 +92,7 @@ class DuopolySolver:
             return -expected_utility
         
         result = minimize(objective, x0=(self.a_min + self.a_max)/2, bounds=[(self.a_min, self.a_max)])
-        return 15#-result.fun  # Return the actual optimal utility value
+        return 0#-result.fun  # Return the actual optimal utility value
     
     def compute_expected_utility(self, a: float, phi1: float, phi2_values: np.ndarray, delta: float, theta: float) -> float:
         """

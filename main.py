@@ -18,28 +18,28 @@ def main():
     
     # Example parameters
     params = {
-        'W': 500.0,            # Initial wealth
-        's': 200.0,             # Accident severity
+        'W': 10000.0,            # Initial wealth
+        's': 8000.0,             # Accident severity
         'N': 100,              # Number of customers
-        'delta1': 1,         # Insurer 1 monitoring level
+        'delta1': 0.7,         # Insurer 1 monitoring level
         'delta2': 0.3,         # Insurer 2 monitoring level
         'theta_min': 0.05,      # Minimum risk type
         'theta_max': 1,      # Maximum risk type
         'n_theta': 10,          # Number of risk types
         'a_min': 0.05,          # Minimum action level
         'a_max': 0.95,          # Maximum action level
-        'mu': 50.0,             # Logit model scale parameter
+        'mu': 500.0,             # Logit model scale parameter
         'p_alpha': 0.0,        # No accident probability parameter (for linear)
         'p_beta': 1.0,         # No accident probability parameter (for linear)
-        'p_hat': 0.4,          # Base probability parameter (for binomial)
+        'p_hat': 0.05,          # high      Base probability parameter (for binomial)
         'n_trials': 2,         # Number of trials (for binomial)
-        'e_kappa': 15.0,       # Action cost parameter
+        'e_kappa': 100.0,       # Action cost parameter
         'e_power': 2.0,        # Action cost power
         'f_p_base': 0.5,       # State density parameter (for binary_states)
-        'c_lambda': 10.0,       # Insurer cost parameter
-        'm_gamma': 5.0,        # Monitoring cost parameter
+        'c_lambda': 100.0,       # Insurer cost parameter
+        'm_gamma': 50.0,        # Monitoring cost parameter
         'u_rho': 1e-3,          # Utility parameter
-        'u_max_val': 100.0,        # Utility parameter
+        'u_max_val': 5000.0,        # Utility parameter
     }
     
     print("="*60)

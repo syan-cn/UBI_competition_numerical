@@ -60,8 +60,8 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
     # Decision Variables for both insurers
     model.a = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals, 
                      bounds=(self.a_min, self.a_max))
-    model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=(0, self.s*100))
-    model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals, bounds=(0, self.s*10))
+    model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=(0, self.s))
+    model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals, bounds=(0, self.s))
     
     # Lagrange multipliers
     model.lam = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
