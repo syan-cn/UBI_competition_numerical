@@ -12,10 +12,7 @@ from utils.logger import SimulationLogger
 
 def main():
     """
-    
     Main function demonstrating the duopoly insurance model.
-    
-    
     
     """
     
@@ -65,22 +62,11 @@ def main():
     #     'c': 'linear'
     # }
 
-    # function_config = {
-    #     'p': 'linear',        # Use linear accident probability
-    #     'm': 'linear',
-    #     'e': 'power',
-    #     'u': 'exponential',
-    #     'f': 'binary_states', # Use binary state density
-    #     'c': 'linear'
-    # }
-
     function_config = {
-        'p': 'binomial',        # Use binomial accident probability
         'p': 'binomial',        # Use binomial accident probability
         'm': 'linear',
         'e': 'power',
         'u': 'exponential',
-        'f': 'binomial_states', # Use binomial state density
         'f': 'binomial_states', # Use binomial state density
         'c': 'linear'
     }
@@ -100,12 +86,14 @@ def main():
     # Try multistart optimization when regular solver fails
     multistart_success, multistart_solution = solver.multistart_solve(
         solver_name='knitroampl',
-        n_starts=10,
+        n_starts=20,
         verbose=True,
         save_plots=True,
         logger=logger,
         executable_path='/Users/syan/knitro-14.2.0-ARM-MacOS/knitroampl/knitroampl',
-        seed=42
+        seed=42,
+        save_model=True,  # Save the model in .nl format
+        model_filename='duopoly_insurance_model'  # Optional: specify filename
     )
     
     if multistart_success:
@@ -124,6 +112,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
-
     main()

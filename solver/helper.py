@@ -378,12 +378,13 @@ class DuopolySolver:
         """Solve the duopoly equilibrium using KKT conditions with pyomo."""
         return build_and_solve_model(self, solver_name, verbose, debug_mode, executable_path)
     
-    def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, executable_path=None):
+    def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, executable_path=None, save_model=False, model_filename=None):
         """Run KKT-based simulation for duopoly insurance model."""
-        return run(self, solver_name, verbose, save_plots, logger, executable_path)
+        return run(self, solver_name, verbose, save_plots, logger, executable_path, save_model, model_filename)
     
     def multistart_solve(self, solver_name='ipopt', n_starts=10, verbose=True, save_plots=True, 
-                        logger=None, executable_path=None, seed=42, save_all_solutions=True):
+                        logger=None, executable_path=None, seed=42, save_all_solutions=True, 
+                        save_model=False, model_filename=None):
         """
         Solve the duopoly equilibrium using multistart approach.
         
@@ -400,9 +401,11 @@ class DuopolySolver:
             executable_path: Optional path to solver executable
             seed: Random seed for reproducibility
             save_all_solutions: Whether to save all feasible solutions found
+            save_model: Whether to save the model in .nl format (only for first solve)
+            model_filename: Optional filename for the saved model (without extension)
             
         Returns:
-            Tuple of (success, solutions) where solutions is a list of all feasible equilibrium solutions found
+            Tuple of (success, solutions) where solutions is a list of dictionaries
         """
 
         # Set random seed for reproducibility
@@ -421,7 +424,9 @@ class DuopolySolver:
                 'save_all_solutions': save_all_solutions,
                 'verbose': verbose,
                 'executable_path': executable_path,
-                'seed': seed
+                'seed': seed,
+                'save_model': save_model,
+                'model_filename': model_filename
             })
             logger.log_parameters(self.params)
 
@@ -438,13 +443,19 @@ class DuopolySolver:
                 # Create a temporary solver with the starting point
                 temp_solver = self._create_solver_with_starting_point(start_point)
                 
+                # Only save model for the first solve to avoid multiple files
+                current_save_model = save_model if i == 0 else False
+                current_model_filename = model_filename if i == 0 else None
+                
                 # Try to solve from this starting point
                 success, solution = temp_solver.run(
                     solver_name=solver_name,
                     verbose=False,  # Reduce verbosity for multistart
                     save_plots=False,  # Don't save plots for intermediate solves
                     logger=None,  # Don't log intermediate results
-                    executable_path=executable_path
+                    executable_path=executable_path,
+                    save_model=current_save_model,
+                    model_filename=current_model_filename
                 )
                 
                 if success and solution is not None:
@@ -670,33 +681,132 @@ class DuopolySolver:
         # Save detailed solutions
         solutions_file = solutions_dir / f"all_solutions_{timestamp}.json"
         
-        # Prepare solutions for JSON serialization (remove non-serializable objects)
+        # Prepare solutions for JSON serialization
         serializable_solutions = []
-        for sol_data in all_solutions:
-            serializable_sol = {
-                'starting_point_id': sol_data['starting_point_id'],
-                'timestamp': sol_data['timestamp'],
-                'solution': {
-                    'insurer1': {
-                        'phi1': float(sol_data['solution']['insurer1']['phi1']),
-                        'phi2': sol_data['solution']['insurer1']['phi2'].tolist(),
-                        'a_schedule': sol_data['solution']['insurer1']['a_schedule'].tolist(),
-                    },
-                    'insurer2': {
-                        'phi1': float(sol_data['solution']['insurer2']['phi1']),
-                        'phi2': sol_data['solution']['insurer2']['phi2'].tolist(),
-                        'a_schedule': sol_data['solution']['insurer2']['a_schedule'].tolist(),
-                    },
-                    'solver_status': sol_data['solution']['solver_status'],
-                    'solve_time': sol_data['solution'].get('solve_time', None)
-                }
-            }
-            serializable_solutions.append(serializable_sol)
         
+        for i, solution_data in enumerate(all_solutions):
+            solution = solution_data['solution']
+            
+            # Calculate expected profits for both insurers
+            insurer1_profit = self.compute_insurer_profit(
+                insurer_id=1,
+                phi1=solution['insurer1']['phi1'],
+                a_schedule=np.array(solution['insurer1']['a_schedule']),
+                phi2_values=np.array(solution['insurer1']['phi2']),
+                other_phi1=solution['insurer2']['phi1'],
+                other_a_schedule=np.array(solution['insurer2']['a_schedule']),
+                other_phi2_values=np.array(solution['insurer2']['phi2'])
+            )
+            
+            insurer2_profit = self.compute_insurer_profit(
+                insurer_id=2,
+                phi1=solution['insurer2']['phi1'],
+                a_schedule=np.array(solution['insurer2']['a_schedule']),
+                phi2_values=np.array(solution['insurer2']['phi2']),
+                other_phi1=solution['insurer1']['phi1'],
+                other_a_schedule=np.array(solution['insurer1']['a_schedule']),
+                other_phi2_values=np.array(solution['insurer1']['phi2'])
+            )
+            
+            # Create serializable solution with profit information
+            serializable_solution = {
+                'solution_id': i + 1,
+                'insurer1': {
+                    'phi1': float(solution['insurer1']['phi1']),
+                    'phi2': [float(x) for x in solution['insurer1']['phi2']],
+                    'a_schedule': [float(x) for x in solution['insurer1']['a_schedule']],
+                    'expected_profit': float(insurer1_profit),
+                    'multipliers': {
+                        'lambda': [float(x) for x in solution['insurer1']['multipliers']['lambda']],
+                        'nu_L': [float(x) for x in solution['insurer1']['multipliers']['nu_L']],
+                        'nu_U': [float(x) for x in solution['insurer1']['multipliers']['nu_U']],
+                        'eta': float(solution['insurer1']['multipliers']['eta']),
+                        'gamma': [float(x) for x in solution['insurer1']['multipliers']['gamma']]
+                    }
+                },
+                'insurer2': {
+                    'phi1': float(solution['insurer2']['phi1']),
+                    'phi2': [float(x) for x in solution['insurer2']['phi2']],
+                    'a_schedule': [float(x) for x in solution['insurer2']['a_schedule']],
+                    'expected_profit': float(insurer2_profit),
+                    'multipliers': {
+                        'lambda': [float(x) for x in solution['insurer2']['multipliers']['lambda']],
+                        'nu_L': [float(x) for x in solution['insurer2']['multipliers']['nu_L']],
+                        'nu_U': [float(x) for x in solution['insurer2']['multipliers']['nu_U']],
+                        'eta': float(solution['insurer2']['multipliers']['eta']),
+                        'gamma': [float(x) for x in solution['insurer2']['multipliers']['gamma']]
+                    }
+                },
+                'solver_status': solution['solver_status'],
+                'solve_time': float(solution['solve_time'])
+            }
+            
+            serializable_solutions.append(serializable_solution)
+        
+        # Save to JSON file
         with open(solutions_file, 'w') as f:
             json.dump(serializable_solutions, f, indent=2)
         
-        print(f"📁 All equilibrium solutions saved to: {solutions_file}")
+        print(f"Saved {len(serializable_solutions)} equilibrium solutions to {solutions_file}")
         
+        # Log file generation if logger provided
         if logger:
             logger.log_file_generation("all_solutions", str(solutions_file), "multistart_optimization")
+
+    def compute_insurer_profit(self, insurer_id: int, phi1: float, a_schedule: np.ndarray, phi2_values: np.ndarray, 
+                              other_phi1: float, other_a_schedule: np.ndarray, other_phi2_values: np.ndarray) -> float:
+        """
+        Compute expected profit for insurer i according to the formula:
+        
+        π_i = N * ∫_Θ P_i(θ) * [φ₁^i - (1-p(a^i(θ))) * ∫ φ₂^i(z) * f(z|a^i(θ),δ^i) dz] * h(θ) dθ - c(δ^i)
+        
+        Args:
+            insurer_id: 1 or 2 for the insurer
+            phi1: Premium for this insurer
+            a_schedule: Action schedule for this insurer (array of length n_theta)
+            phi2_values: Indemnity values for this insurer (array of length n_states)
+            other_phi1: Premium for the other insurer
+            other_a_schedule: Action schedule for the other insurer
+            other_phi2_values: Indemnity values for the other insurer
+        """
+        delta = self.delta1 if insurer_id == 1 else self.delta2
+        
+        # Compute monitoring cost
+        monitoring_cost = self.functions.m(delta, self.params)
+        
+        # Initialize profit integral
+        profit_integral = 0.0
+        
+        # Integrate over all risk types
+        for t, theta in enumerate(self.theta_grid):
+            h_theta = self.h_theta[t]
+            a_val = a_schedule[t]
+            a_other = other_a_schedule[t]
+            
+            # Get choice probability P_i(θ)
+            P0, P1, P2 = self.compute_choice_probabilities(theta, a_val, phi1, phi2_values, 
+                                                          a_other, other_phi1, other_phi2_values)
+            Pi = P1 if insurer_id == 1 else P2
+            
+            # Compute probability of accident
+            p_no_accident = self.functions.p(a_val, self.params)
+            p_accident = 1 - p_no_accident
+            
+            # Get state space and compute indemnity integral
+            state_space = self.functions.f(a_val, delta, self.params)
+            z_values, z_probs = state_space.get_all_states()
+            
+            indemnity_integral = 0.0
+            for j, z in enumerate(z_values):
+                indemnity_integral += phi2_values[j] * z_probs[j]
+            
+            # Compute profit term for this risk type
+            profit_term = phi1 - p_accident * indemnity_integral
+            
+            # Add to integral
+            profit_integral += h_theta * Pi * profit_term
+        
+        # Final profit calculation
+        expected_profit = self.N * profit_integral - monitoring_cost
+        
+        return expected_profit

@@ -11,6 +11,7 @@ from pathlib import Path
 import time
 from utils.config import get_solver_options
 from utils.plotting import plot_results
+from datetime import datetime
 
 # Pyomo imports for KKT-based solving
 try:
@@ -28,10 +29,17 @@ except ImportError:
     print("Warning: Pyomo MPEC module not available. Using relaxed complementary slackness constraints.")
 
 
-def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=True, executable_path=None):
+def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=True, executable_path=None, save_model=False, model_filename=None):
     """
     Solve the duopoly equilibrium using KKT conditions with pyomo.
 
+    Args:
+        solver_name: Name of the solver to use
+        verbose: Whether to print detailed output
+        debug_mode: Whether to enable debug mode
+        executable_path: Optional path to solver executable
+        save_model: Whether to save the model in .nl format
+        model_filename: Optional filename for the saved model (without extension)
     """
 
     if not PYOMO_AVAILABLE:
@@ -60,9 +68,9 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
     # Decision Variables for both insurers
     model.a = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals, 
                      bounds=(self.a_min, self.a_max))
-    model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals, bounds=(0, self.s))
-    model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals, bounds=(0, self.s))
-    
+    model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals)
+    model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals)
+
     # Lagrange multipliers
     model.lam = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
     model.nu_L = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals)
@@ -381,6 +389,62 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
         print(f"  - Total Constraints: {total_constrs + total_mpec_constrs}")
         print(f"  - C/V Ratio: {(total_constrs + total_mpec_constrs)/total_vars:.2f}")
 
+    # Save model in .nl format if requested
+    if save_model:
+        try:
+            # Create saved_models directory if it doesn't exist
+            saved_models_dir = Path("saved_models")
+            saved_models_dir.mkdir(exist_ok=True)
+            
+            # Generate filename if not provided
+            if model_filename is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                model_filename = f"duopoly_model_{timestamp}"
+            
+            # Ensure filename doesn't have extension
+            if model_filename.endswith('.nl'):
+                model_filename = model_filename[:-3]
+            
+            # Full path for the .nl file
+            nl_file_path = saved_models_dir / f"{model_filename}.nl"
+            
+            print(f"Saving model to: {nl_file_path}")
+            
+            # For saving, we need to apply MPEC transformation to make it compatible with .nl format
+            # Create a copy of the model to avoid affecting the solving process
+            if MPEC_AVAILABLE and hasattr(model, 'action_lower_bound'):
+                print("Creating transformed copy for model saving...")
+                import copy
+                model_for_saving = copy.deepcopy(model)
+                
+                try:
+                    # Apply MPEC transformation to the copy
+                    from pyomo.core import TransformationFactory
+                    TransformationFactory('mpec.nl').apply_to(model_for_saving)
+                    print("✅ MPEC transformation applied to model copy for saving")
+                    
+                    # Write the transformed model in .nl format
+                    model_for_saving.write(
+                        str(nl_file_path),
+                        io_options={'symbolic_solver_labels': True}
+                    )
+                    
+                except Exception as e:
+                    print(f"⚠️  Warning: MPEC transformation for saving failed: {e}")
+
+            else:
+                # No complementarity constraints, save directly
+                model.write(
+                    str(nl_file_path),
+                    io_options={'symbolic_solver_labels': True}
+                )
+            
+            print(f"Model saved successfully to {nl_file_path}")
+            
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to save model: {e}")
+            print(f"   Continuing with solving...")
+
     # Solve the model
     print(f"\nSolving KKT system with {solver_name} solver...")
     try:
@@ -496,7 +560,7 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
         return None
 
 
-def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, executable_path=None):
+def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, executable_path=None, save_model=False, model_filename=None):
     """
     Run KKT-based simulation for duopoly insurance model.
     
@@ -506,6 +570,8 @@ def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, e
         save_plots: Whether to save plots to files
         logger: SimulationLogger instance for recording results
         executable_path: Optional path to solver executable (useful for KNITRO)
+        save_model: Whether to save the model in .nl format
+        model_filename: Optional filename for the saved model (without extension)
         
     Returns:
         Tuple of (success, solution) where solution is a dictionary containing simulation results
@@ -521,18 +587,26 @@ def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, e
 
     # Log experiment start if logger is provided
     if logger:
-        logger.log_experiment_start("Duopoly insurance simulation")
-        logger.log_simulation_settings({
+        logger.log_experiment_start({
             'solver_name': solver_name,
-            'save_plots': save_plots,
             'verbose': verbose,
-            'executable_path': executable_path
+            'save_plots': save_plots,
+            'executable_path': executable_path,
+            'save_model': save_model,
+            'model_filename': model_filename
         })
         logger.log_parameters(self.params)
 
     try:
         start_time = time.time()
-        solution = build_and_solve_model(self, solver_name=solver_name, verbose=verbose, executable_path=executable_path)
+        solution = build_and_solve_model(
+            self, 
+            solver_name=solver_name, 
+            verbose=verbose, 
+            executable_path=executable_path,
+            save_model=save_model,
+            model_filename=model_filename
+        )
         solve_time = time.time() - start_time
 
         if solution is not None:
