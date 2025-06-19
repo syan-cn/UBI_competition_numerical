@@ -46,7 +46,7 @@ def main():
 
     # Create logger for analysis
     logger = SimulationLogger(
-        experiment_name="duopoly_demo",
+        experiment_name="duopoly_insurance_model",
         log_level="INFO"
     )
     
@@ -84,7 +84,7 @@ def main():
     # Try multistart optimization when regular solver fails
     multistart_success, multistart_solution = solver.multistart_solve(
         solver_name='ipopt',  # Use IPOPT as the underlying solver
-        n_starts=20,  # Number of multistart iterations
+        n_starts=2,  # Number of multistart iterations
         verbose=True,
         save_plots=True,
         logger=logger,

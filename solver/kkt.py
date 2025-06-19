@@ -272,8 +272,46 @@ class DuopolySolverKKT:
         
         model.stationarity_indemnity = pyo.Constraint(model.I, model.Z, rule=stationarity_indemnity_rule)
         
-        # Objective function - 0
-        model.obj = pyo.Objective(expr=0, sense=pyo.minimize)
+        # Objective function: minimize the sum of squared violations of KKT conditions
+        # This creates a meaningful objective for multistart optimization
+        def kkt_violation_objective(model):
+            """Objective function that measures violation of KKT conditions."""
+            total_violation = 0.0
+            
+            # Incentive compatibility constraint violations
+            for i in model.I:
+                for t in model.THETA:
+                    theta = model.theta_vals[t]
+                    a_val = model.a[i, t]
+                    phi1_val = model.phi1[i]
+                    delta_val = model.delta1 if i == 1 else model.delta2
+                    phi2_values = np.array([model.phi2[i, z] for z in model.Z])
+                    
+                    G_val = self.compute_G_function(theta, a_val, phi1_val, phi2_values, delta_val)
+                    total_violation += G_val**2
+            
+            # # Stationarity condition violations (simplified measure)
+            # for i in model.I:
+            #     for t in model.THETA:
+            #         # Add small penalty for non-zero Lagrange multipliers when constraints are satisfied
+            #         total_violation += 0.1 * model.lam[i, t]**2
+            
+            # # Add regularization terms to prevent extreme values
+            # for i in model.I:
+            #     # Penalize extreme premium values
+            #     total_violation += 0.01 * (model.phi1[i] - self.W/2)**2
+                
+            #     for t in model.THETA:
+            #         # Penalize extreme action values
+            #         total_violation += 0.01 * (model.a[i, t] - 0.5)**2
+                    
+            #         for z in model.Z:
+            #             # Penalize extreme indemnity values
+            #             total_violation += 0.01 * (model.phi2[i, z] - self.W/2)**2
+            
+            return total_violation / 1e5
+        
+        model.obj = pyo.Objective(rule=kkt_violation_objective, sense=pyo.minimize)
 
         return model
 
