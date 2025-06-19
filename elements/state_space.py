@@ -116,3 +116,42 @@ class StateDensity:
             derivatives.append(deriv)
         
         return np.array(derivatives)
+
+    @staticmethod
+    def d2f_da2_binomial_states(a: float, delta: float, params: Dict) -> np.ndarray:
+        """
+        Second derivative of binomial state density with respect to effort a
+        d²f(z|a,δ)/da² = C(n,z) * (δ/(1+e^a))^z * (1-δ/(1+e^a))^(n-z) * 
+                         {e^(2a)/(1+e^a)² * [(z-(n-z)δ/(1+e^a-δ))² + (z-(n-z)δ/(1+e^a-δ))] 
+                          - e^a/(1+e^a) * [(z-(n-z)δ/(1+e^a-δ)) + (n-z)δ*e^a/(1+e^a-δ)²]}
+        """
+        if 'n_trials' not in params:
+            raise ValueError("Parameter 'n_trials' is required for binomial state density function")
+        
+        n = params['n_trials']
+        exp_a = pyo.exp(a)
+        one_plus_exp_a = 1 + exp_a
+        p_success = delta / one_plus_exp_a
+        one_plus_exp_a_minus_delta = one_plus_exp_a - delta
+        
+        second_derivatives = []
+        
+        for z in range(n + 1):
+            # Base probability
+            base_prob = comb(n, z) * (p_success ** z) * ((1 - p_success) ** (n - z))
+            
+            # Term in brackets: z - (n-z)*δ/(1+e^a-δ)
+            bracket_term = z - (n - z) * delta / one_plus_exp_a_minus_delta
+            
+            # First term: e^(2a)/(1+e^a)² * [bracket_term² + bracket_term]
+            first_term = (exp_a ** 2) / (one_plus_exp_a ** 2) * (bracket_term ** 2 + bracket_term)
+            
+            # Second term: e^a/(1+e^a) * [bracket_term + (n-z)δ*e^a/(1+e^a-δ)²]
+            second_term = exp_a / one_plus_exp_a * (bracket_term + (n - z) * delta * exp_a / (one_plus_exp_a_minus_delta ** 2))
+            
+            # Full second derivative
+            second_deriv = base_prob * (first_term - second_term)
+            
+            second_derivatives.append(second_deriv)
+        
+        return np.array(second_derivatives)

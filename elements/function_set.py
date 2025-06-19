@@ -235,6 +235,15 @@ class Functions(FunctionTemplates):
         else:
             raise ValueError(f"Unknown functional form: {form}")
 
+    def d2f_da2(self, a: float, delta: float, params: Dict) -> np.ndarray:
+        form = self.function_config['f']
+        if form == 'binary_states':
+            return np.array([0.0, 0.0])
+        elif form == 'binomial_states':
+            return StateDensity.d2f_da2_binomial_states(a, delta, params)
+        else:
+            raise ValueError(f"Unknown functional form: {form}")
+
     def du_dx(self, x: float, params: Dict) -> float:
         form = self.function_config['u']
         if form == 'exponential':

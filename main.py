@@ -6,7 +6,7 @@ duopoly insurance model framework.
 """
 
 from elements.function_set import Functions
-from solver.helper import DuopolySolver
+from solver.kkt import DuopolySolverKKT
 from utils.logger import SimulationLogger
 
 
@@ -29,7 +29,7 @@ def main():
         'mu': 500.0,             # Logit model scale parameter
         # 'p_alpha': 0.0,        # No accident probability parameter (for linear)
         # 'p_beta': 1.0,         # No accident probability parameter (for linear)
-        'p_hat': 0.9,          # Base probability parameter (for binomial)
+        'p_hat': 0.05,          # Base probability parameter (for binomial)
         'n_trials': 10,         # Number of trials (for binomial)
         'e_kappa': 100.0,       # Action cost parameter
         'e_power': 2.0,        # Action cost power
@@ -77,14 +77,14 @@ def main():
     print("KKT-BASED SOLVER")
     print("="*40)
     
-    solver = DuopolySolver(functions, params)
+    solver = DuopolySolverKKT(functions, params)
 
     print("\n" + "="*40)
     
     # Try multistart optimization when regular solver fails
     multistart_success, multistart_solution = solver.multistart_solve(
         solver_name='ipopt',  # Use IPOPT as the underlying solver
-        n_starts=500,  # Number of multistart iterations
+        n_starts=20,  # Number of multistart iterations
         verbose=True,
         save_plots=True,
         logger=logger,
