@@ -66,56 +66,12 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
     model.delta2 = pyo.Param(initialize=self.delta2)
     
     # Decision Variables for both insurers
-    model.a = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals, 
-                     bounds=(self.a_min, self.a_max))
-    model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals)
-    model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals)
+    model.a = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
+    model.phi1 = pyo.Var(model.I, domain=pyo.Reals)
+    model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.Reals)
 
     # Lagrange multipliers
     model.lam = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
-    model.nu_L = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals)
-    model.nu_U = pyo.Var(model.I, model.THETA, domain=pyo.NonNegativeReals)
-    model.eta = pyo.Var(model.I, domain=pyo.NonNegativeReals)
-    model.gamma = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals)
-    
-    # Set starting values if provided
-    if hasattr(self, 'starting_point') and self.starting_point is not None:
-        print("Setting starting values from multistart...")
-        start_point = self.starting_point
-        
-        # Set starting values for action levels
-        for i in model.I:
-            for t in model.THETA:
-                if (i, t) in start_point['a']:
-                    model.a[i, t].value = start_point['a'][(i, t)]
-        
-        # Set starting values for premiums
-        for i in model.I:
-            if i in start_point['phi1']:
-                model.phi1[i].value = start_point['phi1'][i]
-        
-        # Set starting values for indemnities
-        for i in model.I:
-            for z in model.Z:
-                if (i, z) in start_point['phi2']:
-                    model.phi2[i, z].value = start_point['phi2'][(i, z)]
-        
-        # Set starting values for Lagrange multipliers
-        for i in model.I:
-            for t in model.THETA:
-                if (i, t) in start_point['lam']:
-                    model.lam[i, t].value = start_point['lam'][(i, t)]
-                if (i, t) in start_point['nu_L']:
-                    model.nu_L[i, t].value = start_point['nu_L'][(i, t)]
-                if (i, t) in start_point['nu_U']:
-                    model.nu_U[i, t].value = start_point['nu_U'][(i, t)]
-            
-            if i in start_point['eta']:
-                model.eta[i].value = start_point['eta'][i]
-            
-            for z in model.Z:
-                if (i, z) in start_point['gamma']:
-                    model.gamma[i, z].value = start_point['gamma'][(i, z)]
     
     def incentive_constraint_rule(model, i, t):
         """Incentive compatibility constraint G(θ) = 0."""
@@ -133,58 +89,6 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
         return G_val == 0
     
     model.incentive_constraint = pyo.Constraint(model.I, model.THETA, rule=incentive_constraint_rule)
-    
-    # Complementary slackness constraints using MPEC formulation
-    if MPEC_AVAILABLE:
-        print("Using MPEC complementarity constraints...")
-        
-        # Action lower bound complementarity: ν_L^i(θ) ⟂ (a^i(θ) - a_min)
-        def action_lower_bound_rule(model, i, t):
-            return complements(model.nu_L[i, t] >= 0, model.a[i, t] - self.a_min >= 0)
-        
-        model.action_lower_bound = Complementarity(model.I, model.THETA, rule=action_lower_bound_rule)
-        
-        # Action upper bound complementarity: ν_U^i(θ) ⟂ (a_max - a^i(θ))
-        def action_upper_bound_rule(model, i, t):
-            return complements(model.nu_U[i, t] >= 0, self.a_max - model.a[i, t] >= 0)
-        
-        model.action_upper_bound = Complementarity(model.I, model.THETA, rule=action_upper_bound_rule)
-        
-        # Premium non-negativity complementarity: η^i ⊥ φ₁^i
-        def premium_nonnegativity_rule(model, i):
-            return complements(model.eta[i] >= 0, model.phi1[i] >= 0)
-        
-        model.premium_nonnegativity = Complementarity(model.I, rule=premium_nonnegativity_rule)
-        
-        # Indemnity non-negativity complementarity: γ^i(z) ⊥ φ₂^i(z)
-        def indemnity_nonnegativity_rule(model, i, z):
-            return complements(model.gamma[i, z] >= 0, model.phi2[i, z] >= 0)
-        
-        model.indemnity_nonnegativity = Complementarity(model.I, model.Z, rule=indemnity_nonnegativity_rule)
-        
-    else:
-        print("MPEC not available, using relaxed complementary slackness constraints...")
-        
-        # Fallback to relaxed complementary slackness constraints
-        def comp_slack_lower_rule(model, i, t):
-            return model.nu_L[i, t] * (self.a_min - model.a[i, t]) == 0
-        
-        model.comp_slack_lower = pyo.Constraint(model.I, model.THETA, rule=comp_slack_lower_rule)
-        
-        def comp_slack_upper_rule(model, i, t):
-            return model.nu_U[i, t] * (model.a[i, t] - self.a_max) == 0
-        
-        model.comp_slack_upper = pyo.Constraint(model.I, model.THETA, rule=comp_slack_upper_rule)
-        
-        def comp_slack_premium_rule(model, i):
-            return model.eta[i] * model.phi1[i] == 0
-        
-        model.comp_slack_premium = pyo.Constraint(model.I, rule=comp_slack_premium_rule)
-        
-        def comp_slack_indemnity_rule(model, i, z):
-            return model.gamma[i, z] * model.phi2[i, z] == 0
-        
-        model.comp_slack_indemnity = pyo.Constraint(model.I, model.Z, rule=comp_slack_indemnity_rule)
     
     # Stationarity conditions
     def stationarity_action_rule(model, i, t):
@@ -244,7 +148,7 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
         term2 = -self.N * Pi * second_term_bracket
         term3 = model.lam[i, t] * dG_da
         
-        return term1 + term2 + term3 - model.nu_L[i, t] + model.nu_U[i, t] == 0
+        return term1 + term2 + term3 == 0
     
     model.stationarity_action = pyo.Constraint(model.I, model.THETA, rule=stationarity_action_rule)
     
@@ -300,7 +204,7 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
             lambda_dG_integral += model.lam[i, t] * dG_dphi1 * h_theta_val
         
         # Stationarity condition
-        return self.N * integral_term + lambda_dG_integral - model.eta[i] == 0
+        return self.N * integral_term + lambda_dG_integral == 0
     
     model.stationarity_premium = pyo.Constraint(model.I, rule=stationarity_premium_rule)
     
@@ -363,7 +267,7 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
             lambda_dG_integral += model.lam[i, t] * dG_dphi2 * h_theta_val
         
         # Stationarity condition
-        return -self.N * first_integral + self.N * second_integral + lambda_dG_integral - model.gamma[i, z] == 0
+        return -self.N * first_integral + self.N * second_integral + lambda_dG_integral == 0
     
     model.stationarity_indemnity = pyo.Constraint(model.I, model.Z, rule=stationarity_indemnity_rule)
     
@@ -505,27 +409,15 @@ def build_and_solve_model(self, solver_name='ipopt', verbose=False, debug_mode=T
             solution = {
                 'insurer1': {
                     'phi1': pyo.value(model.phi1[1]),
-                    'phi2': np.array([pyo.value(model.phi2[1, z]) for z in model.Z]),
+                    'phi2_values': np.array([pyo.value(model.phi2[1, z]) for z in model.Z]),
                     'a_schedule': np.array([pyo.value(model.a[1, t]) for t in model.THETA]),
-                    'multipliers': {
-                        'lambda': np.array([pyo.value(model.lam[1, t]) for t in model.THETA]),
-                        'nu_L': np.array([pyo.value(model.nu_L[1, t]) for t in model.THETA]),
-                        'nu_U': np.array([pyo.value(model.nu_U[1, t]) for t in model.THETA]),
-                        'eta': pyo.value(model.eta[1]),
-                        'gamma': np.array([pyo.value(model.gamma[1, z]) for z in model.Z])
-                    }
+                    'lambda': np.array([pyo.value(model.lam[1, t]) for t in model.THETA]),
                 },
                 'insurer2': {
                     'phi1': pyo.value(model.phi1[2]),
-                    'phi2': np.array([pyo.value(model.phi2[2, z]) for z in model.Z]),
+                    'phi2_values': np.array([pyo.value(model.phi2[2, z]) for z in model.Z]),
                     'a_schedule': np.array([pyo.value(model.a[2, t]) for t in model.THETA]),
-                    'multipliers': {
-                        'lambda': np.array([pyo.value(model.lam[2, t]) for t in model.THETA]),
-                        'nu_L': np.array([pyo.value(model.nu_L[2, t]) for t in model.THETA]),
-                        'nu_U': np.array([pyo.value(model.nu_U[2, t]) for t in model.THETA]),
-                        'eta': pyo.value(model.eta[2]),
-                        'gamma': np.array([pyo.value(model.gamma[2, z]) for z in model.Z])
-                    }
+                    'lambda': np.array([pyo.value(model.lam[2, t]) for t in model.THETA]),
                 },
                 'solver_status': 'optimal',
                 'solver_info': results,
@@ -580,7 +472,6 @@ def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, e
     print(f"Model configuration:")
     print(f"  - Risk types: {self.n_theta}")
     print(f"  - States: {self.n_states}")
-    print(f"  - Action bounds: [{self.a_min}, {self.a_max}]")
     print(f"  - Initial wealth W: {self.W}")
     print(f"  - Accident severity s: {self.s}")
     print(f"  - Monitoring levels: δ₁={self.delta1}, δ₂={self.delta2}")
@@ -618,7 +509,7 @@ def run(self, solver_name='ipopt', verbose=True, save_plots=True, logger=None, e
                 key = f'insurer{insurer_id}'
                 print(f"\nInsurer {insurer_id} Solution:")
                 print(f"  Premium φ₁^{insurer_id}: {solution[key]['phi1']:.4f}")
-                print(f"  Indemnities φ₂^{insurer_id}: {solution[key]['phi2']}")
+                print(f"  Indemnities φ₂^{insurer_id}: {solution[key]['phi2_values']}")
                 print(f"  Action schedule a^{insurer_id}(θ): {solution[key]['a_schedule']}")
 
             # Log performance metrics if logger is provided

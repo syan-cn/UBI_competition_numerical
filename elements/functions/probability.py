@@ -6,9 +6,6 @@ Contains different functional forms for no accident probability p(a) and their d
 
 import pyomo.environ as pyo
 from typing import Dict
-import numpy as np
-from scipy.special import comb
-import numpy as np
 from scipy.special import comb
 
 class NoAccidentProbability:
@@ -35,8 +32,7 @@ class NoAccidentProbability:
     @staticmethod
     def binomial(a: float, params: Dict) -> float:
         """
-        Binomial no accident probability: p(a) = [1 - σ(a)p̂]^n
-        where σ(a) = 1 - a
+        Binomial no accident probability: p(a) = (1 - p̂/(1+e^a))^n
         """
         if 'p_hat' not in params:
             raise ValueError("Parameter 'p_hat' is required for binomial no accident probability function")
@@ -45,13 +41,13 @@ class NoAccidentProbability:
         
         p_hat = params['p_hat']
         n = params['n_trials']
-        
-        return 1 - (1 - (1 - a) * p_hat) ** n
+        return (1 - p_hat / (1 + pyo.exp(a))) ** n
     
     @staticmethod
     def dp_da_binomial(a: float, params: Dict) -> float:
         """
-        Derivative of binomial no accident probability: dp/da = n*p̂*[1-(1-a)*p̂]^(n-1)
+        Derivative of binomial no accident probability: 
+        dp/da = n*p̂*(1-p̂/(1+e^a))^(n-1) * e^a/(1+e^a)^2
         """
         if 'p_hat' not in params:
             raise ValueError("Parameter 'p_hat' is required for binomial no accident probability function")
@@ -61,13 +57,18 @@ class NoAccidentProbability:
         p_hat = params['p_hat']
         n = params['n_trials']
         
-        return n * p_hat * (1 - (1 - a) * p_hat) ** (n - 1)
+        exp_a = pyo.exp(a)
+        one_plus_exp_a = 1 + exp_a
+        term1 = 1 - p_hat / one_plus_exp_a
+        
+        return n * p_hat * (term1 ** (n - 1)) * exp_a / (one_plus_exp_a ** 2)
     
     @staticmethod
     def d2p_da2_binomial(a: float, params: Dict) -> float:
         """
         Second derivative of binomial no accident probability:
-        d²p/da² = n(n-1)p_hat² * [1-(1-a)p_hat]^(n-2)
+        d²p/da² = n*p̂*e^a*(1-p̂/(1+e^a))^(n-2) * 
+                  [(1-p̂/(1+e^a))*(1-e^a)/(1+e^a)^3 + (n-1)*p̂*e^a/(1+e^a)^4]
         """
         if 'p_hat' not in params:
             raise ValueError("Parameter 'p_hat' is required for binomial no accident probability function")
@@ -77,51 +78,13 @@ class NoAccidentProbability:
         p_hat = params['p_hat']
         n = params['n_trials']
         
-        return n * (n - 1) * (p_hat ** 2) * (1 - (1 - a) * p_hat) ** (n - 2)
-    
-    @staticmethod
-    def binomial(a: float, params: Dict) -> float:
-        """
-        Binomial accident probability: p(a) = 1 - [1 - σ(a)p̂]^n
-        where σ(a) = 1 - a
-        """
-        if 'p_hat' not in params:
-            raise ValueError("Parameter 'p_hat' is required for binomial no accident probability function")
-        if 'n_trials' not in params:
-            raise ValueError("Parameter 'n_trials' is required for binomial no accident probability function")
+        exp_a = pyo.exp(a)
+        one_plus_exp_a = 1 + exp_a
+        term1 = 1 - p_hat / one_plus_exp_a
         
-        p_hat = params['p_hat']
-        n = params['n_trials']
+        # First term in brackets
+        bracket_term1 = term1 * (1 - exp_a) / (one_plus_exp_a ** 3)
+        # Second term in brackets
+        bracket_term2 = (n - 1) * p_hat * exp_a / (one_plus_exp_a ** 4)
         
-        return 1 - (1 - (1 - a) * p_hat) ** n
-    
-    @staticmethod
-    def dp_da_binomial(a: float, params: Dict) -> float:
-        """
-        Derivative of binomial accident probability: dp/da = -n*p̂*[1-(1-a)*p̂]^(n-1)
-        """
-        if 'p_hat' not in params:
-            raise ValueError("Parameter 'p_hat' is required for binomial no accident probability function")
-        if 'n_trials' not in params:
-            raise ValueError("Parameter 'n_trials' is required for binomial no accident probability function")
-        
-        p_hat = params['p_hat']
-        n = params['n_trials']
-        
-        return -n * p_hat * (1 - (1 - a) * p_hat) ** (n - 1)
-    
-    @staticmethod
-    def d2p_da2_binomial(a: float, params: Dict) -> float:
-        """
-        Second derivative of binomial accident probability:
-        d²p/da² = -n(n-1)p_hat² * [1-(1-a)p_hat]^(n-2)
-        """
-        if 'p_hat' not in params:
-            raise ValueError("Parameter 'p_hat' is required for binomial no accident probability function")
-        if 'n_trials' not in params:
-            raise ValueError("Parameter 'n_trials' is required for binomial no accident probability function")
-        
-        p_hat = params['p_hat']
-        n = params['n_trials']
-        
-        return -n * (n - 1) * (p_hat ** 2) * (1 - (1 - a) * p_hat) ** (n - 2)
+        return n * p_hat * exp_a * (term1 ** (n - 2)) * (bracket_term1 + bracket_term2)

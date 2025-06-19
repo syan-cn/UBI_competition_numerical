@@ -22,6 +22,17 @@ except ImportError:
     PYOMO_AVAILABLE = False
     print("Warning: Pyomo not available. KKT-based solving will not work.")
 
+# Pyomo multistart solver import
+try:
+    # Test if multistart solver is available through SolverFactory
+    multistart_solver = pyo.SolverFactory('multistart')
+    MULTISTART_AVAILABLE = multistart_solver.available()
+    if not MULTISTART_AVAILABLE:
+        print("Warning: Pyomo multistart solver not available. Install with: pip install pyomo[multistart]")
+except Exception as e:
+    MULTISTART_AVAILABLE = False
+    print(f"Warning: Pyomo multistart solver not available: {e}")
+
 from solver.kkt import build_and_solve_model, run
 
 
@@ -63,10 +74,6 @@ class DuopolySolver:
         self.theta_max = params['theta_max']
         self.n_theta = params['n_theta']
         
-        # Action bounds - default to [0, 1] if not specified
-        self.a_min = params.get('a_min', 0.0)
-        self.a_max = params.get('a_max', 1.0)
-        
         # Create risk type grid
         self.theta_grid = np.linspace(self.theta_min, self.theta_max, self.n_theta)
         
@@ -80,19 +87,18 @@ class DuopolySolver:
     
     def compute_reservation_utility(self, theta: float) -> float:
         """Compute reservation utility V_0(theta)."""
-        def objective(a):
-            p_no_accident = self.functions.p(a, self.params)
-            p_accident = 1 - p_no_accident
-            e_val = self.functions.e(a, theta, self.params)
-            
-            utility_no_accident = self.functions.u(self.W, self.params)
-            utility_accident = self.functions.u(self.W - self.s, self.params)
-            
-            expected_utility = p_no_accident * utility_no_accident + p_accident * utility_accident - e_val
-            return -expected_utility
-        
-        result = minimize(objective, x0=(self.a_min + self.a_max)/2, bounds=[(self.a_min, self.a_max)])
-        return 0#-result.fun  # Return the actual optimal utility value
+        # def objective(a):
+        #     p_no_accident = self.functions.p(a, self.params)
+        #     p_accident = 1 - p_no_accident
+        #     e_val = self.functions.e(a, theta, self.params)
+        #
+        #     utility_no_accident = self.functions.u(self.W, self.params)
+        #     utility_accident = self.functions.u(self.W - self.s, self.params)
+        #
+        #     expected_utility = p_no_accident * utility_no_accident + p_accident * utility_accident - e_val
+        #     return -expected_utility
+        #
+        return 100#-result.fun  # Return the actual optimal utility value
     
     def compute_expected_utility(self, a: float, phi1: float, phi2_values: np.ndarray, delta: float, theta: float) -> float:
         """
@@ -386,7 +392,7 @@ class DuopolySolver:
                         logger=None, executable_path=None, seed=42, save_all_solutions=True, 
                         save_model=False, model_filename=None):
         """
-        Solve the duopoly equilibrium using multistart approach.
+        Solve the duopoly equilibrium using Pyomo's standard multistart solver.
         
         For Nash equilibrium problems, we find ALL feasible equilibrium solutions,
         not just a single "best" solution, since there is no meaningful objective
@@ -408,11 +414,17 @@ class DuopolySolver:
             Tuple of (success, solutions) where solutions is a list of dictionaries
         """
 
+        if not PYOMO_AVAILABLE:
+            raise ImportError("Pyomo is required for multistart solving. Please install it with: pip install pyomo")
+        
+        if not MULTISTART_AVAILABLE:
+            raise ImportError("Pyomo multistart solver is required. Please install it with: pip install pyomo[multistart]")
+        
         # Set random seed for reproducibility
         random.seed(seed)
         np.random.seed(seed)
         
-        print(f"Starting multistart optimization with {n_starts} different starting points...")
+        print(f"Starting Pyomo multistart optimization with {n_starts} different starting points...")
         print("Note: For Nash equilibrium, we find ALL feasible solutions, not just one 'best' solution.")
         
         if logger:
@@ -430,237 +442,239 @@ class DuopolySolver:
             })
             logger.log_parameters(self.params)
 
-        successful_solves = 0
-        all_solutions = []  # Store all feasible equilibrium solutions
-        
-        # Generate starting points
-        starting_points = self._generate_starting_points(n_starts)
-        
-        for i, start_point in enumerate(starting_points):
-            print(f"\n--- Starting point {i+1}/{len(starting_points)} ---")
+        try:
+            # Build the model for multistart optimization
+            model = self._build_multistart_model()
             
-            try:
-                # Create a temporary solver with the starting point
-                temp_solver = self._create_solver_with_starting_point(start_point)
-                
-                # Only save model for the first solve to avoid multiple files
-                current_save_model = save_model if i == 0 else False
-                current_model_filename = model_filename if i == 0 else None
-                
-                # Try to solve from this starting point
-                success, solution = temp_solver.run(
-                    solver_name=solver_name,
-                    verbose=False,  # Reduce verbosity for multistart
-                    save_plots=False,  # Don't save plots for intermediate solves
-                    logger=None,  # Don't log intermediate results
-                    executable_path=executable_path,
-                    save_model=current_save_model,
-                    model_filename=current_model_filename
-                )
-                
-                if success and solution is not None:
-                    successful_solves += 1
-                    print(f"✅ Starting point {i+1} converged to feasible equilibrium")
-                    
-                    # Store solution with metadata (no objective value needed for equilibrium)
-                    solution_data = {
-                        'starting_point_id': i + 1,
-                        'solution': solution,
-                        'timestamp': datetime.now().isoformat(),
-                        'starting_point': start_point
-                    }
-                    all_solutions.append(solution_data)
-
-                else:
-                    print(f"❌ Starting point {i+1} failed to converge")
-                    
-            except Exception as e:
-                print(f"❌ Starting point {i+1} failed with error: {e}")
-                continue
-        
-        print(f"\n" + "="*60)
-        print("MULTISTART OPTIMIZATION SUMMARY")
-        print("="*60)
-        print(f"Total starting points tried: {len(starting_points)}")
-        print(f"Successful solves: {successful_solves}")
-        print(f"Success rate: {successful_solves/len(starting_points)*100:.1f}%")
-        
-        if all_solutions:
-            print(f"Number of equilibrium solutions found: {len(all_solutions)}")
-            print("✅ Multistart optimization successful!")
-
-            # Save all solutions if requested
-            if save_all_solutions and all_solutions:
-                self._save_all_solutions(all_solutions, logger)
+            # Configure multistart solver
+            multistart_solver = pyo.SolverFactory('multistart')
             
-            # Log final results
-            if logger:
-                logger.log_performance_metric("multistart_success_rate", successful_solves/len(starting_points))
-                logger.log_performance_metric("successful_solves", successful_solves)
-                logger.log_performance_metric("total_solutions_found", len(all_solutions))
-            
-            # Save plots for solution analysis
-            if save_plots and all_solutions:
-                from utils.plotting import plot_results
-                
-                plots_dir = Path("plots")
-                plots_dir.mkdir(exist_ok=True)
-                
-                # Plot each individual solution
-                for i, solution_data in enumerate(all_solutions):
-                    plot_path = plots_dir / f"multistart_solution_{i+1}.png"
-                    plot_results(self, solution_data['solution'], save_path=str(plot_path))
-                    print(f"📈 Solution {i+1} plot saved to: {plot_path}")
-                
-                if logger:
-                    for i in range(len(all_solutions)):
-                        logger.log_plot_generation(f"multistart_solution_{i+1}", str(plots_dir / f"multistart_solution_{i+1}.png"), "multistart_optimization")
-            
-            if logger:
-                logger.log_experiment_end("Multistart optimization completed successfully")
-                logger.print_summary()
-            
-            # Return all solutions, not just one
-            return True, all_solutions
-        else:
-            print("❌ No feasible equilibrium solution found from any starting point")
-            
-            if logger:
-                logger.log_error("No feasible equilibrium solution found in multistart")
-                logger.log_experiment_end("Multistart optimization failed")
-            
-            return False, []
-    
-    def _generate_starting_points(self, n_starts):
-        """
-        Generate multiple starting points for the optimization variables.
-        
-        Args:
-            n_starts: Number of starting points to generate
-            
-        Returns:
-            List of dictionaries containing starting values for optimization variables
-        """
-        starting_points = []
-        
-        for i in range(n_starts):
-            # Generate random starting point
-            start_point = {
-                'a': {},  # Action levels for each insurer and risk type
-                'phi1': {},  # Premiums for each insurer
-                'phi2': {},  # Indemnities for each insurer and state
-                'lam': {},  # Lagrange multipliers for incentive constraints
-                'nu_L': {},  # Lagrange multipliers for lower bounds
-                'nu_U': {},  # Lagrange multipliers for upper bounds
-                'eta': {},  # Lagrange multipliers for premium non-negativity
-                'gamma': {}  # Lagrange multipliers for indemnity non-negativity
+            # Set multistart options
+            multistart_options = {
+                'strategy': 'rand',  # Random choice between variable bounds
+                'solver': solver_name,
+                'solver_args': {},
+                'iterations': n_starts,
+                'stopping_mass': 0.5,
+                'stopping_delta': 0.5,
+                'suppress_unbounded_warning': True,
+                'HCS_max_iterations': 1000,
+                'HCS_tolerance': 0
             }
             
-            # Generate starting values for action levels
-            for insurer in [1, 2]:
-                for t in range(self.n_theta):
-                    # Random action between bounds
-                    start_point['a'][(insurer, t)] = np.random.uniform(self.a_min, self.a_max)
+            # Add solver-specific options if executable path is provided
+            if executable_path:
+                multistart_options['solver_args']['executable'] = executable_path
             
-            # Generate starting values for premiums
-            for insurer in [1, 2]:
-                # Random premium between 0 and accident severity
-                start_point['phi1'][insurer] = np.random.uniform(0, self.s)
+            print(f"Running multistart solver with {n_starts} iterations...")
             
-            # Generate starting values for indemnities
-            for insurer in [1, 2]:
-                for z in range(self.n_states):
-                    # Random indemnity between 0 and accident severity
-                    start_point['phi2'][(insurer, z)] = np.random.uniform(0, self.s)
+            # Solve using multistart
+            results = multistart_solver.solve(model, **multistart_options)
             
-            # Generate starting values for Lagrange multipliers
-            for insurer in [1, 2]:
-                for t in range(self.n_theta):
-                    # Random multipliers (can be negative for lam)
-                    start_point['lam'][(insurer, t)] = np.random.uniform(-1, 1)
-                    start_point['nu_L'][(insurer, t)] = np.random.uniform(0, 1)
-                    start_point['nu_U'][(insurer, t)] = np.random.uniform(0, 1)
+            # Check if multistart was successful
+            if results.solver.status == SolverStatus.ok:
+                print("✅ Pyomo multistart optimization completed successfully!")
                 
-                start_point['eta'][insurer] = np.random.uniform(0, 1)
+                # Extract solution
+                solution = self._extract_solution_from_model(model)
                 
-                for z in range(self.n_states):
-                    start_point['gamma'][(insurer, z)] = np.random.uniform(0, 1)
-            
-            starting_points.append(start_point)
-        
-        # Add some strategic starting points
-        strategic_points = self._generate_strategic_starting_points()
-        starting_points.extend(strategic_points)
-        
-        return starting_points
+                if solution is not None:
+                    # Store solution with metadata
+                    solution_data = {
+                        'solution': solution,
+                        'timestamp': datetime.now().isoformat(),
+                        'multistart_results': results,
+                        'n_iterations': n_starts
+                    }
+                    
+                    all_solutions = [solution_data]
+                    
+                    print(f"Number of equilibrium solutions found: {len(all_solutions)}")
+                    
+                    # Save all solutions if requested
+                    if save_all_solutions and all_solutions:
+                        self._save_all_solutions(all_solutions, logger)
+                    
+                    # Log final results
+                    if logger:
+                        logger.log_performance_metric("multistart_success_rate", 1.0)
+                        logger.log_performance_metric("successful_solves", 1)
+                        logger.log_performance_metric("total_solutions_found", len(all_solutions))
+                    
+                    # Save plots for solution analysis
+                    if save_plots and all_solutions:
+                        from utils.plotting import plot_results
+                        
+                        plots_dir = Path("plots")
+                        plots_dir.mkdir(exist_ok=True)
+                        
+                        # Plot the solution
+                        plot_path = plots_dir / "multistart_solution_1.png"
+                        plot_results(self, solution_data['solution'], save_path=str(plot_path))
+                        print(f"📈 Solution plot saved to: {plot_path}")
+                        
+                        if logger:
+                            logger.log_plot_generation("multistart_solution_1", str(plot_path), "multistart_optimization")
+                    
+                    if logger:
+                        logger.log_experiment_end("Pyomo multistart optimization completed successfully")
+                        logger.print_summary()
+                    
+                    return True, all_solutions
+                else:
+                    print("❌ No valid solution extracted from multistart results")
+                    return False, []
+            else:
+                print(f"❌ Pyomo multistart optimization failed with status: {results.solver.status}")
+                return False, []
+                
+        except Exception as e:
+            print(f"❌ Pyomo multistart optimization failed with error: {e}")
+            if logger:
+                logger.log_error(f"Pyomo multistart failed: {e}")
+                logger.log_experiment_end("Pyomo multistart optimization failed")
+            return False, []
     
-    def _generate_strategic_starting_points(self):
+    def _build_multistart_model(self):
         """
-        Generate strategic starting points based on economic intuition.
+        Build a Pyomo model suitable for multistart optimization.
         
         Returns:
-            List of strategic starting points
+            Pyomo ConcreteModel instance
         """
-        strategic_points = []
+        # Create the optimization model
+        model = pyo.ConcreteModel()
         
-        # Point 1: Conservative starting point (low actions, low premiums)
-        conservative = {
-            'a': {(i, t): self.a_min + 0.1 * (self.a_max - self.a_min) for i in [1, 2] for t in range(self.n_theta)},
-            'phi1': {1: 0.1 * self.s, 2: 0.1 * self.s},
-            'phi2': {(i, z): 0.1 * self.s for i in [1, 2] for z in range(self.n_states)},
-            'lam': {(i, t): 0.0 for i in [1, 2] for t in range(self.n_theta)},
-            'nu_L': {(i, t): 0.0 for i in [1, 2] for t in range(self.n_theta)},
-            'nu_U': {(i, t): 0.0 for i in [1, 2] for t in range(self.n_theta)},
-            'eta': {1: 0.0, 2: 0.0},
-            'gamma': {(i, z): 0.0 for i in [1, 2] for z in range(self.n_states)}
-        }
-        strategic_points.append(conservative)
+        # Sets
+        model.THETA = pyo.Set(initialize=range(self.n_theta))  # Risk types
+        model.Z = pyo.Set(initialize=range(self.n_states))     # States
+        model.I = pyo.Set(initialize=[1, 2])                  # Insurers
         
-        # Point 2: Aggressive starting point (high actions, high premiums)
-        aggressive = {
-            'a': {(i, t): self.a_max - 0.1 * (self.a_max - self.a_min) for i in [1, 2] for t in range(self.n_theta)},
-            'phi1': {1: 0.8 * self.s, 2: 0.8 * self.s},
-            'phi2': {(i, z): 0.8 * self.s for i in [1, 2] for z in range(self.n_states)},
-            'lam': {(i, t): 0.0 for i in [1, 2] for t in range(self.n_theta)},
-            'nu_L': {(i, t): 0.0 for i in [1, 2] for t in range(self.n_theta)},
-            'nu_U': {(i, t): 0.0 for i in [1, 2] for t in range(self.n_theta)},
-            'eta': {1: 0.0, 2: 0.0},
-            'gamma': {(i, z): 0.0 for i in [1, 2] for z in range(self.n_states)}
-        }
-        strategic_points.append(aggressive)
+        # Parameters
+        model.W = pyo.Param(initialize=self.W)
+        model.s = pyo.Param(initialize=self.s)
+        model.N = pyo.Param(initialize=self.N)
+        model.theta_vals = pyo.Param(model.THETA, initialize={i: self.theta_grid[i] for i in range(self.n_theta)})
+        model.h_theta = pyo.Param(model.THETA, initialize={i: self.h_theta[i] for i in range(self.n_theta)})
+        model.z_vals = pyo.Param(model.Z, initialize={i: self.z_values[i] for i in range(self.n_states)})
+        model.delta1 = pyo.Param(initialize=self.delta1)
+        model.delta2 = pyo.Param(initialize=self.delta2)
         
-        # Point 3: Mid-range starting point
-        mid_range = {
-            'a': {(i, t): (self.a_min + self.a_max) / 2 for i in [1, 2] for t in range(self.n_theta)},
-            'phi1': {1: 0.5 * self.s, 2: 0.5 * self.s},
-            'phi2': {(i, z): 0.5 * self.s for i in [1, 2] for z in range(self.n_states)},
-            'lam': {(i, t): 0.0 for i in [1, 2] for t in range(self.n_theta)},
-            'nu_L': {(i, t): 0.0 for i in [1, 2] for t in range(self.n_theta)},
-            'nu_U': {(i, t): 0.0 for i in [1, 2] for t in range(self.n_theta)},
-            'eta': {1: 0.0, 2: 0.0},
-            'gamma': {(i, z): 0.0 for i in [1, 2] for z in range(self.n_states)}
-        }
-        strategic_points.append(mid_range)
+        # Decision Variables for both insurers
+        model.a = pyo.Var(model.I, model.THETA, domain=pyo.Reals, bounds=(0, 1))
+        model.phi1 = pyo.Var(model.I, domain=pyo.Reals, bounds=(0, self.s))
+        model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.Reals, bounds=(0, self.s))
+
+        # Lagrange multipliers with bounds to avoid warnings
+        model.lam = pyo.Var(model.I, model.THETA, domain=pyo.Reals, bounds=(-100, 100))
         
-        return strategic_points
+        # Add a dummy objective function for multistart (required by Pyomo)
+        # We'll minimize the sum of squared constraint violations
+        def objective_rule(model):
+            """Minimize constraint violations."""
+            violation_sum = 0.0
+            
+            # Add incentive constraint violations
+            for i in model.I:
+                for t in model.THETA:
+                    theta = model.theta_vals[t]
+                    a_val = model.a[i, t]
+                    phi1_val = model.phi1[i]
+                    delta_val = model.delta1 if i == 1 else model.delta2
+                    phi2_values = [model.phi2[i, z] for z in model.Z]
+                    G_val = self.compute_G_function(theta, a_val, phi1_val, np.array(phi2_values), delta_val)
+                    violation_sum += G_val**2
+            
+            return violation_sum
+        
+        model.objective = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
+        
+        # Add constraints
+        def incentive_constraint_rule(model, i, t):
+            """Incentive compatibility constraint G(θ) = 0."""
+            theta = model.theta_vals[t]
+            a_val = model.a[i, t]
+            phi1_val = model.phi1[i]
+            delta_val = model.delta1 if i == 1 else model.delta2
+            phi2_values = [model.phi2[i, z] for z in model.Z]
+            G_val = self.compute_G_function(theta, a_val, phi1_val, np.array(phi2_values), delta_val)
+            return G_val == 0
+        
+        model.incentive_constraint = pyo.Constraint(model.I, model.THETA, rule=incentive_constraint_rule)
+        
+        # Add stationarity constraints (simplified for multistart)
+        def stationarity_action_rule(model, i, t):
+            """Stationarity with respect to action a^i(θ)."""
+            theta = model.theta_vals[t]
+            a_val = model.a[i, t]
+            phi1_val = model.phi1[i]
+            delta_val = model.delta1 if i == 1 else model.delta2
+            phi2_values = [model.phi2[i, z] for z in model.Z]
+            
+            other_insurer = 2 if i == 1 else 1
+            a_other = model.a[other_insurer, t]
+            phi1_other = model.phi1[other_insurer]
+            phi2_other_values = [model.phi2[other_insurer, z] for z in model.Z]
+            
+            P0, P1, P2 = self.compute_choice_probabilities(theta, a_val, phi1_val, np.array(phi2_values), 
+                                                          a_other, phi1_other, np.array(phi2_other_values))
+            Pi = P1 if i == 1 else P2
+            
+            dPi_da = self.compute_dPi_da(theta, i, a_val, phi1_val, np.array(phi2_values), 
+                                        a_other, phi1_other, np.array(phi2_other_values))
+            dG_da = self.compute_dG_da(theta, a_val, phi1_val, np.array(phi2_values), delta_val)
+            
+            # Simplified stationarity condition
+            return dPi_da + model.lam[i, t] * dG_da == 0
+        
+        model.stationarity_action = pyo.Constraint(model.I, model.THETA, rule=stationarity_action_rule)
+        
+        return model
     
-    def _create_solver_with_starting_point(self, start_point):
+    def _extract_solution_from_model(self, model):
         """
-        Create a new solver instance with the given starting point.
+        Extract solution from the solved Pyomo model.
         
         Args:
-            start_point: Dictionary containing starting values
+            model: Solved Pyomo model
             
         Returns:
-            Modified DuopolySolver instance
+            Dictionary containing the solution or None if extraction fails
         """
-        # Create a copy of the current solver
-        new_solver = DuopolySolver(self.functions, self.params)
-        
-        # Store the starting point for use in the optimization
-        new_solver.starting_point = start_point
-        
-        return new_solver
+        try:
+            # Check if the model has been solved
+            if not hasattr(model, 'phi1') or not hasattr(model, 'a') or not hasattr(model, 'phi2'):
+                print("Error: Model does not have required variables")
+                return None
+            
+            # Extract solution with proper error handling
+            solution = {
+                'insurer1': {
+                    'phi1': float(pyo.value(model.phi1[1])) if model.phi1[1].value is not None else 0.0,
+                    'a_schedule': np.array([float(pyo.value(model.a[1, t])) if model.a[1, t].value is not None else 0.0 for t in model.THETA]),
+                    'phi2_values': np.array([float(pyo.value(model.phi2[1, z])) if model.phi2[1, z].value is not None else 0.0 for z in model.Z])
+                },
+                'insurer2': {
+                    'phi1': float(pyo.value(model.phi1[2])) if model.phi1[2].value is not None else 0.0,
+                    'a_schedule': np.array([float(pyo.value(model.a[2, t])) if model.a[2, t].value is not None else 0.0 for t in model.THETA]),
+                    'phi2_values': np.array([float(pyo.value(model.phi2[2, z])) if model.phi2[2, z].value is not None else 0.0 for z in model.Z])
+                },
+                'lagrange_multipliers': {
+                    'insurer1': np.array([float(pyo.value(model.lam[1, t])) if model.lam[1, t].value is not None else 0.0 for t in model.THETA]),
+                    'insurer2': np.array([float(pyo.value(model.lam[2, t])) if model.lam[2, t].value is not None else 0.0 for t in model.THETA])
+                }
+            }
+            
+            print(f"Successfully extracted solution:")
+            print(f"  Insurer 1 premium: {solution['insurer1']['phi1']:.4f}")
+            print(f"  Insurer 2 premium: {solution['insurer2']['phi1']:.4f}")
+            
+            return solution
+        except Exception as e:
+            print(f"Error extracting solution: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
     
     def _save_all_solutions(self, all_solutions, logger=None):
         """
@@ -692,20 +706,20 @@ class DuopolySolver:
                 insurer_id=1,
                 phi1=solution['insurer1']['phi1'],
                 a_schedule=np.array(solution['insurer1']['a_schedule']),
-                phi2_values=np.array(solution['insurer1']['phi2']),
+                phi2_values=np.array(solution['insurer1']['phi2_values']),
                 other_phi1=solution['insurer2']['phi1'],
                 other_a_schedule=np.array(solution['insurer2']['a_schedule']),
-                other_phi2_values=np.array(solution['insurer2']['phi2'])
+                other_phi2_values=np.array(solution['insurer2']['phi2_values'])
             )
             
             insurer2_profit = self.compute_insurer_profit(
                 insurer_id=2,
                 phi1=solution['insurer2']['phi1'],
                 a_schedule=np.array(solution['insurer2']['a_schedule']),
-                phi2_values=np.array(solution['insurer2']['phi2']),
+                phi2_values=np.array(solution['insurer2']['phi2_values']),
                 other_phi1=solution['insurer1']['phi1'],
                 other_a_schedule=np.array(solution['insurer1']['a_schedule']),
-                other_phi2_values=np.array(solution['insurer1']['phi2'])
+                other_phi2_values=np.array(solution['insurer1']['phi2_values'])
             )
             
             # Create serializable solution with profit information
@@ -713,32 +727,20 @@ class DuopolySolver:
                 'solution_id': i + 1,
                 'insurer1': {
                     'phi1': float(solution['insurer1']['phi1']),
-                    'phi2': [float(x) for x in solution['insurer1']['phi2']],
+                    'phi2_values': [float(x) for x in solution['insurer1']['phi2_values']],
                     'a_schedule': [float(x) for x in solution['insurer1']['a_schedule']],
                     'expected_profit': float(insurer1_profit),
-                    'multipliers': {
-                        'lambda': [float(x) for x in solution['insurer1']['multipliers']['lambda']],
-                        'nu_L': [float(x) for x in solution['insurer1']['multipliers']['nu_L']],
-                        'nu_U': [float(x) for x in solution['insurer1']['multipliers']['nu_U']],
-                        'eta': float(solution['insurer1']['multipliers']['eta']),
-                        'gamma': [float(x) for x in solution['insurer1']['multipliers']['gamma']]
-                    }
+                    'lagrange_multipliers': [float(x) for x in solution['lagrange_multipliers']['insurer1']],
                 },
                 'insurer2': {
                     'phi1': float(solution['insurer2']['phi1']),
-                    'phi2': [float(x) for x in solution['insurer2']['phi2']],
+                    'phi2_values': [float(x) for x in solution['insurer2']['phi2_values']],
                     'a_schedule': [float(x) for x in solution['insurer2']['a_schedule']],
                     'expected_profit': float(insurer2_profit),
-                    'multipliers': {
-                        'lambda': [float(x) for x in solution['insurer2']['multipliers']['lambda']],
-                        'nu_L': [float(x) for x in solution['insurer2']['multipliers']['nu_L']],
-                        'nu_U': [float(x) for x in solution['insurer2']['multipliers']['nu_U']],
-                        'eta': float(solution['insurer2']['multipliers']['eta']),
-                        'gamma': [float(x) for x in solution['insurer2']['multipliers']['gamma']]
-                    }
+                    'lagrange_multipliers': [float(x) for x in solution['lagrange_multipliers']['insurer2']],
                 },
-                'solver_status': solution['solver_status'],
-                'solve_time': float(solution['solve_time'])
+                'timestamp': solution_data.get('timestamp', ''),
+                'n_iterations': solution_data.get('n_iterations', 0)
             }
             
             serializable_solutions.append(serializable_solution)

@@ -12,25 +12,23 @@ class Utility:
 
     @staticmethod
     def exponential(x: float, params: Dict) -> float:
+        """CARA utility  u(x) = (1 - e^{-ρx}) / ρ."""
         if 'u_rho' not in params:
-            raise ValueError("Parameter 'u_rho' is required for exponential utility function")
-        if 'u_max_val' not in params:
-            raise ValueError("Parameter 'u_max_val' is required for exponential utility function")
+            raise ValueError("Parameter 'u_rho' is required for exponential utility")
         rho = params['u_rho']
-        max_val = params['u_max_val']
-        return max_val * (1.0 - pyo.exp(-rho * x))
+        return (1.0 - pyo.exp(-rho * x)) / rho
 
     @staticmethod
     def du_dx_exponential(x: float, params: Dict) -> float:
+        """First derivative u'(x) = e^{-ρx}."""
         rho = params['u_rho']
-        max_val = params['u_max_val']
-        return max_val * rho * pyo.exp(-rho * x)
+        return pyo.exp(-rho * x)
 
     @staticmethod
     def d2u_dx2_exponential(x: float, params: Dict) -> float:
+        """Second derivative u''(x) = -ρ e^{-ρx}."""
         rho = params['u_rho']
-        max_val = params['u_max_val']
-        return -max_val * rho**2 * pyo.exp(-rho * x)
+        return -rho * pyo.exp(-rho * x)
 
     @staticmethod
     def power(x: float, params: Dict) -> float:

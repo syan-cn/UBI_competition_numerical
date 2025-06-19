@@ -35,8 +35,8 @@ def plot_results(solver, solution: Dict, save_path: str = None):
     
     # Plot 2: Indemnity schedules (Bar plot - Row 1, Column 2)
     z_values = solver.z_values
-    phi2_1 = solution['insurer1']['phi2']
-    phi2_2 = solution['insurer2']['phi2']
+    phi2_1 = solution['insurer1']['phi2_values']
+    phi2_2 = solution['insurer2']['phi2_values']
     
     x_pos = np.arange(len(z_values))
     width = 0.35

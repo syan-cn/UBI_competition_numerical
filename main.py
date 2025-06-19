@@ -18,28 +18,26 @@ def main():
     
     # Example parameters
     params = {
-        'W': 10000.0,            # Initial wealth
-        's': 8000.0,             # Accident severity
+        'W': 1000.0,            # Initial wealth
+        's': 600.0,             # Accident severity
         'N': 100,              # Number of customers
         'delta1': 0.7,         # Insurer 1 monitoring level
-        'delta2': 0.3,         # Insurer 2 monitoring level
-        'theta_min': 0.05,      # Minimum risk type
-        'theta_max': 1,      # Maximum risk type
+        'delta2': 0.2,         # Insurer 2 monitoring level
+        'theta_min': 1,      # Minimum risk type
+        'theta_max': 10,      # Maximum risk type
         'n_theta': 10,          # Number of risk types
-        'a_min': 0.05,          # Minimum action level
-        'a_max': 0.95,          # Maximum action level
         'mu': 500.0,             # Logit model scale parameter
-        'p_alpha': 0.0,        # No accident probability parameter (for linear)
-        'p_beta': 1.0,         # No accident probability parameter (for linear)
-        'p_hat': 0.05,          # high      Base probability parameter (for binomial)
-        'n_trials': 2,         # Number of trials (for binomial)
+        # 'p_alpha': 0.0,        # No accident probability parameter (for linear)
+        # 'p_beta': 1.0,         # No accident probability parameter (for linear)
+        'p_hat': 0.9,          # Base probability parameter (for binomial)
+        'n_trials': 10,         # Number of trials (for binomial)
         'e_kappa': 100.0,       # Action cost parameter
         'e_power': 2.0,        # Action cost power
-        'f_p_base': 0.5,       # State density parameter (for binary_states)
+        # 'f_p_base': 0.5,       # State density parameter (for binary_states)
         'c_lambda': 100.0,       # Insurer cost parameter
-        'm_gamma': 50.0,        # Monitoring cost parameter
+        'm_gamma': 100.0,        # Monitoring cost parameter
         'u_rho': 1e-3,          # Utility parameter
-        'u_max_val': 5000.0,        # Utility parameter
+        # 'u_max_val': 5000.0,        # Utility parameter
     }
     
     print("="*60)
@@ -85,12 +83,12 @@ def main():
     
     # Try multistart optimization when regular solver fails
     multistart_success, multistart_solution = solver.multistart_solve(
-        solver_name='knitroampl',
-        n_starts=20,
+        solver_name='ipopt',  # Use IPOPT as the underlying solver
+        n_starts=500,  # Number of multistart iterations
         verbose=True,
         save_plots=True,
         logger=logger,
-        executable_path='/Users/syan/knitro-14.2.0-ARM-MacOS/knitroampl/knitroampl',
+        executable_path=None,  # Let Pyomo find the solver automatically
         seed=42,
         save_model=True,  # Save the model in .nl format
         model_filename='duopoly_insurance_model'  # Optional: specify filename
@@ -99,13 +97,6 @@ def main():
     if multistart_success:
         print("✅ Multistart optimization successful!")
         print(f"Number of equilibrium solutions found: {len(multistart_solution)}")
-
-        # Display summary of first solution as representative
-        if multistart_solution:
-            first_solution = multistart_solution[0]['solution']
-            print(f"\nRepresentative equilibrium solution:")
-            print(f"  Insurer 1 premium: {first_solution['insurer1']['phi1']:.4f}")
-            print(f"  Insurer 2 premium: {first_solution['insurer2']['phi1']:.4f}")
     else:
         print("❌ Multistart optimization failed!")
         print("Consider adjusting model parameters.")

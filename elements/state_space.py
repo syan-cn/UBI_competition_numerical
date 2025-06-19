@@ -6,6 +6,7 @@ in insurance models, including state density functions.
 """
 
 import numpy as np
+import pyomo.environ as pyo
 from typing import Dict, Tuple, List
 from scipy.special import comb
 
@@ -68,14 +69,13 @@ class StateDensity:
     def binomial_states(a: float, delta: float, params: Dict) -> DiscreteStateSpace:
         """
         Binomial state space: z ∈ {0, 1, 2, ..., n}
-        f(z | a, delta) = C(n,z) * [σ(a)δ]^z * [1-σ(a)δ]^(n-z)
-        where σ(a) = 1 - a
+        f(z | a, delta) = C(n,z) * (δ/(1+e^a))^z * (1-δ/(1+e^a))^(n-z)
         """
         if 'n_trials' not in params:
             raise ValueError("Parameter 'n_trials' is required for binomial state density function")
         
         n = params['n_trials']
-        p_success = (1 - a) * delta
+        p_success = delta / (1 + pyo.exp(a))
         
         z_values = list(range(n + 1))  # 0, 1, 2, ..., n
         z_probs = []
@@ -90,21 +90,28 @@ class StateDensity:
     def df_da_binomial_states(a: float, delta: float, params: Dict) -> np.ndarray:
         """
         Derivative of binomial state density with respect to effort a
-        df(z|a,δ)/da = -δ * C(n,z) * [(1-a)δ]^(z-1) * [1-(1-a)δ]^(n-z-1) * [z(1-(1-a)δ) - (n-z)(1-a)δ]
+        df(z|a,δ)/da = -C(n,z) * (δ/(1+e^a))^z * (1-δ/(1+e^a))^(n-z) * 
+                       e^a/(1+e^a) * [z - (n-z)*δ/(1+e^a-δ)]
         """
         if 'n_trials' not in params:
             raise ValueError("Parameter 'n_trials' is required for binomial state density function")
         
         n = params['n_trials']
-        p_success = (1 - a) * delta
+        exp_a = pyo.exp(a)
+        one_plus_exp_a = 1 + exp_a
+        p_success = delta / one_plus_exp_a
         
         derivatives = []
         
         for z in range(n + 1):
-            # Use the same formula for all z values
-            term1 = comb(n, z) * (p_success ** (z - 1)) * ((1 - p_success) ** (n - z - 1))
-            term2 = z * (1 - p_success) - (n - z) * p_success
-            deriv = -delta * term1 * term2
+            # Base probability
+            base_prob = comb(n, z) * (p_success ** z) * ((1 - p_success) ** (n - z))
+            
+            # Term in brackets
+            bracket_term = z - (n - z) * delta / (one_plus_exp_a - delta)
+            
+            # Full derivative
+            deriv = -base_prob * exp_a / one_plus_exp_a * bracket_term
             
             derivatives.append(deriv)
         
