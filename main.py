@@ -21,7 +21,7 @@ def main():
         'W': 1000.0,  # $1,000 wealth
         's': 500.0,
         'N': 20,  # 20 customers (small market)
-        'delta1': 0.4,  # 60% monitoring efficiency (high-tech insurer)
+        'delta1': 0.3 ,  # 60% monitoring efficiency (high-tech insurer)
         'delta2': 0.2,  # 40% monitoring efficiency (traditional insurer)
         'theta_min': 0.05,
         'theta_max': 1,
@@ -31,7 +31,7 @@ def main():
         'p_beta': 1,  # Base accident probability scaling
         'p_hat': 0.02,
         'n_trials': 4,
-        'e_kappa': 100.0,  # Action cost coefficient
+        'e_kappa': 10.0,  # Action cost coefficient
         'e_power': 2,  # Diminishing returns to effort
         'e_lambda': 2,  # Exponential cost scaling
         'c_lambda': 50.0,  # Insurer fixed costs
@@ -60,7 +60,7 @@ def main():
     # }
 
     function_config = {
-        'p': 'binomial',        # Use binomial accident probability
+        'p': 'binomial_logistic',        # Use binomial accident probability
         'm': 'linear',
         'e': 'power',  # Use power action cost
         'u': 'exponential',
@@ -82,12 +82,12 @@ def main():
     
     # Try multistart optimization when regular solver fails
     multistart_success, multistart_solution = solver.multistart_solve(
-        solver_name='ipopt',  # Use IPOPT as the underlying solver
-        n_starts=2000,  # Number of multistart iterations
+        solver_name='knitroampl',  # Use KNITRO as the underlying solver
+        n_starts=500,  # Number of multistart iterations
         verbose=True,
         save_plots=True,
         logger=logger,
-        executable_path=None,  # Let Pyomo find the solver automatically
+        executable_path='/Users/syan/knitro-14.2.0-ARM-MacOS/knitroampl/knitroampl',
         seed=42,
         save_model=True,  # Save the model in .nl format
         model_filename='duopoly_insurance_model'  # Optional: specify filename
