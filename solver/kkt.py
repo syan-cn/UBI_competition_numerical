@@ -39,8 +39,8 @@ class DuopolySolverKKT:
         self.h_theta = np.ones(self.n_theta) / self.n_theta
         # Get state space for reference (will be computed dynamically)
         state_space = self.functions.f(1.0, 1.0, self.params)
-        z_values, z_probs = state_space.get_all_states()
-        self.z_states = len(z_values)
+        self.z_values, z_probs = state_space.get_all_states()
+        self.z_states = len(self.z_values)
 
     def build_model(self, solver_name='ipopt', verbose=False, debug_mode=True, executable_path=None, save_model=False, model_filename=None):
         """
@@ -73,13 +73,26 @@ class DuopolySolverKKT:
         model.delta1 = pyo.Param(initialize=self.delta1)
         model.delta2 = pyo.Param(initialize=self.delta2)
         
-        # Decision Variables for both insurers
-        model.a = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
-        model.phi1 = pyo.Var(model.I, domain=pyo.Reals)
+        # Decision Variables with VERY tight bounds to prevent any overflow
+        model.a = pyo.Var(model.I, model.THETA, domain=pyo.Reals, bounds=(0.0, 1.0))
+        model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals)
         model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.Reals)
 
         # Lagrange multipliers
         model.lam = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
+        
+        # Wealth constraints to ensure non-negative wealth
+        def wealth_no_accident_constraint_rule(model, i):
+            """Constraint to ensure W - φ₁^i ≥ 0 (non-negative wealth after premium payment)."""
+            return model.W - model.phi1[i] >= 0
+        
+        model.wealth_no_accident_constraint = pyo.Constraint(model.I, rule=wealth_no_accident_constraint_rule)
+        
+        def wealth_accident_constraint_rule(model, i, z):
+            """Constraint to ensure W - φ₁^i + φ₂^i(z) - s ≥ 0 (non-negative wealth after accident with indemnity)."""
+            return model.W - model.phi1[i] + model.phi2[i, z] - model.s >= 0
+        
+        model.wealth_accident_constraint = pyo.Constraint(model.I, model.Z, rule=wealth_accident_constraint_rule)
         
         def incentive_constraint_rule(model, i, t):
             """Incentive compatibility constraint G(θ) = 0."""
@@ -316,22 +329,35 @@ class DuopolySolverKKT:
         return model
 
     def compute_reservation_utility(self, theta: float) -> float:
-        """Compute reservation utility V_0(theta)."""
+        """Compute reservation utility V_0(theta) using Pyomo optimization."""
 
-        # def objective(a):
-        #     p_no_accident = self.functions.p(a, self.params)
-        #     p_accident = 1 - p_no_accident
-        #     e_val = self.functions.e(a, theta, self.params)
-        #
-        #     utility_no_accident = self.functions.u(self.W, self.params)
-        #     utility_accident = self.functions.u(self.W - self.s, self.params)
-        #
-        #     expected_utility = p_no_accident * utility_no_accident + p_accident * utility_accident - e_val
-        #     return -expected_utility
-        #
-        # result = minimize(objective, x0=0.5, method='L-BFGS-B')
+        # Create Pyomo model for reservation utility optimization
+        reservation_model = pyo.ConcreteModel()
 
-        return 100  # -result.fun  # Return the actual optimal utility value
+        # Decision variable: action level
+        reservation_model.a = pyo.Var(domain=pyo.Reals)
+
+        # Objective function: maximize expected utility
+        def objective_rule(reservation_model):
+            a_val = reservation_model.a
+            p_no_accident = self.functions.p(a_val, self.params)
+            p_accident = 1 - p_no_accident
+            e_val = self.functions.e(a_val, theta, self.params)
+
+            utility_no_accident = self.functions.u(self.W, self.params)
+            utility_accident = self.functions.u(self.W - self.s, self.params)
+
+            expected_utility = p_no_accident * utility_no_accident + p_accident * utility_accident - e_val
+            return -expected_utility  # Minimize negative utility (maximize utility)
+
+        reservation_model.obj = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
+        
+        # Solve the optimization problem
+        solver = pyo.SolverFactory('ipopt')
+        solver.solve(reservation_model, tee=False)
+        
+        optimal_utility = -pyo.value(reservation_model.obj)  # Convert back to positive utility
+        return optimal_utility / 10
 
     def compute_expected_utility(self, a: float, phi1: float, phi2_values: np.ndarray, delta: float,
                                  theta: float) -> float:

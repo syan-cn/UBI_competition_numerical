@@ -16,28 +16,27 @@ def main():
     
     """
     
-    # Example parameters
+    # OVERFLOW-SAFE parameters designed to work with tight variable bounds
     params = {
-        'W': 1000.0,            # Initial wealth
-        's': 600.0,             # Accident severity
-        'N': 100,              # Number of customers
-        'delta1': 0.7,         # Insurer 1 monitoring level
-        'delta2': 0.2,         # Insurer 2 monitoring level
-        'theta_min': 1,      # Minimum risk type
-        'theta_max': 10,      # Maximum risk type
-        'n_theta': 10,          # Number of risk types
-        'mu': 500.0,             # Logit model scale parameter
-        # 'p_alpha': 0.0,        # No accident probability parameter (for linear)
-        # 'p_beta': 1.0,         # No accident probability parameter (for linear)
-        'p_hat': 0.05,          # Base probability parameter (for binomial)
-        'n_trials': 10,         # Number of trials (for binomial)
-        'e_kappa': 100.0,       # Action cost parameter
-        'e_power': 2.0,        # Action cost power
-        # 'f_p_base': 0.5,       # State density parameter (for binary_states)
-        'c_lambda': 100.0,       # Insurer cost parameter
-        'm_gamma': 100.0,        # Monitoring cost parameter
-        'u_rho': 1e-3,          # Utility parameter
-        # 'u_max_val': 5000.0,        # Utility parameter
+        'W': 1000.0,  # $1,000 wealth
+        's': 500.0,
+        'N': 20,  # 20 customers (small market)
+        'delta1': 0.4,  # 60% monitoring efficiency (high-tech insurer)
+        'delta2': 0.2,  # 40% monitoring efficiency (traditional insurer)
+        'theta_min': 0.05,
+        'theta_max': 1,
+        'n_theta': 5,  # risk types
+        'mu': 50,  # Moderate choice sensitivity
+        'p_alpha': 0,  # Base accident probability scaling
+        'p_beta': 1,  # Base accident probability scaling
+        'p_hat': 0.02,
+        'n_trials': 4,
+        'e_kappa': 100.0,  # Action cost coefficient
+        'e_power': 2,  # Diminishing returns to effort
+        'e_lambda': 2,  # Exponential cost scaling
+        'c_lambda': 50.0,  # Insurer fixed costs
+        'm_gamma': 30.0,  # Monitoring technology costs
+        'u_rho': 0.001,  # Risk aversion coefficient
     }
     
     print("="*60)
@@ -52,10 +51,10 @@ def main():
     
     # Create function configuration
     # function_config = {
-    #     'p': 'linear',        # Use linear accident probability
+    #     'p': 'binomial',        # Use linear accident probability
     #     'm': 'linear',
-    #     'e': 'power',
-    #     'u': 'exponential',
+    #     'e': 'power',  # Use exponential action cost
+    #     'u': 'exponential',  # Use logarithmic utility function
     #     'f': 'binary_states', # Use binary state density
     #     'c': 'linear'
     # }
@@ -63,7 +62,7 @@ def main():
     function_config = {
         'p': 'binomial',        # Use binomial accident probability
         'm': 'linear',
-        'e': 'power',
+        'e': 'power',  # Use power action cost
         'u': 'exponential',
         'f': 'binomial_states', # Use binomial state density
         'c': 'linear'
@@ -84,7 +83,7 @@ def main():
     # Try multistart optimization when regular solver fails
     multistart_success, multistart_solution = solver.multistart_solve(
         solver_name='ipopt',  # Use IPOPT as the underlying solver
-        n_starts=2,  # Number of multistart iterations
+        n_starts=2000,  # Number of multistart iterations
         verbose=True,
         save_plots=True,
         logger=logger,

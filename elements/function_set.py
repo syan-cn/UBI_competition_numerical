@@ -116,7 +116,7 @@ class Functions(FunctionTemplates):
         valid_forms = {
             'p': ['linear', 'binomial'],
             'm': ['linear', 'exponential', 'power'],
-            'e': ['power'],
+            'e': ['power', 'exponential'],
             'u': ['exponential', 'power', 'logarithmic'],
             'f': ['binary_states', 'binomial_states'],
             'c': ['linear', 'exponential', 'power']
@@ -124,17 +124,6 @@ class Functions(FunctionTemplates):
         for key, form in function_config.items():
             if form not in valid_forms[key]:
                 raise ValueError(f"Invalid functional form '{form}' for '{key}'. Valid forms: {valid_forms[key]}")
-
-    @staticmethod
-    def choice_probabilities(V0, V1, V2, mu):
-        exp_V0 = pyo.exp(mu * V0)
-        exp_V1 = pyo.exp(mu * V1)
-        exp_V2 = pyo.exp(mu * V2)
-        denominator = exp_V0 + exp_V1 + exp_V2
-        prob_0 = exp_V0 / denominator
-        prob_1 = exp_V1 / denominator
-        prob_2 = exp_V2 / denominator
-        return prob_0, prob_1, prob_2
 
     def p(self, a: float, params: Dict) -> float:
         form = self.function_config['p']
@@ -160,6 +149,8 @@ class Functions(FunctionTemplates):
         form = self.function_config['e']
         if form == 'power':
             return ActionCost.power(a, theta, params)
+        elif form == 'exponential':
+            return ActionCost.exponential(a, theta, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 
@@ -216,6 +207,8 @@ class Functions(FunctionTemplates):
         form = self.function_config['e']
         if form == 'power':
             return ActionCost.de_da_power(a, theta, params)
+        elif form == 'exponential':
+            return ActionCost.de_da_exponential(a, theta, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 
@@ -223,6 +216,8 @@ class Functions(FunctionTemplates):
         form = self.function_config['e']
         if form == 'power':
             return ActionCost.d2e_da2_power(a, theta, params)
+        elif form == 'exponential':
+            return ActionCost.d2e_da2_exponential(a, theta, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 

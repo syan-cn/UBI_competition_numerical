@@ -4,7 +4,6 @@ Utility Functions Module
 Contains different functional forms for utility u(x) and their derivatives.
 """
 
-import numpy as np
 import pyomo.environ as pyo
 from typing import Dict
 
@@ -58,7 +57,7 @@ class Utility:
 
     @staticmethod
     def logarithmic(x: float, params: Dict) -> float:
-        return np.log(x)
+        return pyo.log(x)
 
     @staticmethod
     def du_dx_logarithmic(x: float, params: Dict) -> float:
