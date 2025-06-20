@@ -60,7 +60,7 @@ def main():
     # }
 
     function_config = {
-        'p': 'binomial',        # Use binomial accident probability
+        'p': 'binomial_logistic',        # Use binomial accident probability
         'm': 'linear',
         'e': 'power',  # Use power action cost
         'u': 'exponential',
