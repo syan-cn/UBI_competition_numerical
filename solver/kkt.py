@@ -76,7 +76,7 @@ class DuopolySolverKKT:
         # Decision Variables with VERY tight bounds to prevent any overflow
         model.a = pyo.Var(model.I, model.THETA, domain=pyo.Reals, bounds=(0.0, 1.0))
         model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals)
-        model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals)
+        model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.Reals)
 
         # Lagrange multipliers
         model.lam = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
