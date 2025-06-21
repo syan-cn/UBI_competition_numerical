@@ -76,7 +76,7 @@ class DuopolySolverKKT:
         # Decision Variables with VERY tight bounds to prevent any overflow
         model.a = pyo.Var(model.I, model.THETA, domain=pyo.Reals, bounds=(0.0, 1.0))
         model.phi1 = pyo.Var(model.I, domain=pyo.NonNegativeReals)
-        model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.NonNegativeReals)
+        model.phi2 = pyo.Var(model.I, model.Z, domain=pyo.Reals)
 
         # Lagrange multipliers
         model.lam = pyo.Var(model.I, model.THETA, domain=pyo.Reals)
@@ -750,16 +750,6 @@ class DuopolySolverKKT:
             # Build the model for multistart optimization
             model = self.build_model()
             
-            # Configure the underlying solver with executable path if provided
-            import os
-            original_path = None
-            if executable_path and solver_name == 'knitroampl':
-                # Add the directory containing the executable to PATH
-                exec_dir = os.path.dirname(executable_path)
-                original_path = os.environ.get('PATH', '')
-                os.environ['PATH'] = f"{exec_dir}:{original_path}"
-                print(f"Added {exec_dir} to PATH for KNITRO executable")
-            
             # Configure multistart solver
             multistart_solver = pyo.SolverFactory('multistart')
             
@@ -775,6 +765,10 @@ class DuopolySolverKKT:
                 'HCS_max_iterations': 1000,
                 'HCS_tolerance': 0
             }
+            
+            # Add solver-specific options if executable path is provided
+            if executable_path:
+                multistart_options['solver_args']['executable'] = executable_path
             
             print(f"Running multistart solver with {n_starts} iterations...")
             

@@ -114,7 +114,7 @@ class Functions(FunctionTemplates):
             if key not in function_config:
                 raise ValueError(f"Function configuration must include '{key}'")
         valid_forms = {
-            'p': ['linear', 'binomial', 'binomial_logistic'],
+            'p': ['linear', 'binomial'],
             'm': ['linear', 'exponential', 'power'],
             'e': ['power', 'exponential'],
             'u': ['exponential', 'power', 'logarithmic'],
@@ -131,8 +131,6 @@ class Functions(FunctionTemplates):
             return NoAccidentProbability.linear(a, params)
         elif form == 'binomial':
             return NoAccidentProbability.binomial(a, params)
-        elif form == 'binomial_logistic':
-            return NoAccidentProbability.binomial_logistic(a, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 
@@ -193,8 +191,6 @@ class Functions(FunctionTemplates):
             return NoAccidentProbability.dp_da_linear(a, params)
         elif form == 'binomial':
             return NoAccidentProbability.dp_da_binomial(a, params)
-        elif form == 'binomial_logistic':
-            return NoAccidentProbability.dp_da_binomial_logistic(a, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 
@@ -204,8 +200,6 @@ class Functions(FunctionTemplates):
             return NoAccidentProbability.d2p_da2_linear(a, params)
         elif form == 'binomial':
             return NoAccidentProbability.d2p_da2_binomial(a, params)
-        elif form == 'binomial_logistic':
-            return NoAccidentProbability.d2p_da2_binomial_logistic(a, params)
         else:
             raise ValueError(f"Unknown functional form: {form}")
 
